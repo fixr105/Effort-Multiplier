@@ -21,7 +21,7 @@ dist-ssr
 *.sln
 *.sw?
 .env
-data/
+/data/
 *.sqlite
 *.sqlite-journal
 *.sqlite-wal

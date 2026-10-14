@@ -1,3 +1,7 @@
+# Integrations
+
+Google products stay hidden until `GOOGLE_CONFIRMED_PRODUCTS` lists ids whose Cloud APIs an administrator has enabled. The OAuth client variables alone do not make a product visible. Chat, Admin SDK, and Workspace Events stay hidden because their prerequisites are not configured. Disconnecting one Google product removes it locally. The Google refresh token is revoked only when no other product still uses that grant.
+
 # Zoho integrations
 
 Zoho CRM, Books, Inventory, People, Desk, Projects, Calendar, and Sign can connect separately. Each product keeps its own tokens. The other Zoho cards are Coming soon or Setup required and do not start OAuth. Zoho Creator needs an app owner and link name before a connector can read records, and that step is not built. Non-Zoho cards still use the demo connection stored only in this browser.

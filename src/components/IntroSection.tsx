@@ -1,5 +1,4 @@
 import { Link2, CheckCircle2, Settings2 } from 'lucide-react';
-import type { Integration } from '@/types';
 
 interface IntroSectionProps {
   totalIntegrations: number;

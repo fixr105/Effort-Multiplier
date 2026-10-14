@@ -30,6 +30,13 @@ function unavailableStore(): TokenStore {
     deleteConnection: () => Promise.resolve(null),
     updateConnectionSecrets: refused,
     setOrganization: () => Promise.resolve(false),
+    getGoogleGrant: () => Promise.resolve(null),
+    insertGoogleGrant: refused,
+    updateGoogleGrant: refused,
+    listGoogleConnections: () => Promise.resolve([]),
+    upsertGoogleConnection: refused,
+    deleteGoogleConnection: () => Promise.resolve(false),
+    deleteGoogleGrant: refused,
     ping: () => Promise.resolve({ tables: [] }),
     close: () => Promise.resolve(),
   };

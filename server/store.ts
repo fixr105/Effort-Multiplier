@@ -42,6 +42,39 @@ export interface StoredConnection {
   updatedAt: number;
 }
 
+export interface GoogleGrantRecord {
+  id: string;
+  sessionId: string;
+  userId: string | null;
+  googleSub: string;
+  email: string;
+  accessToken: EncryptedSecret;
+  refreshToken: EncryptedSecret;
+  accessTokenExpiresAt: number;
+  grantedScopes: string;
+  refreshedAt: number | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface GoogleConnectionRecord {
+  id: string;
+  grantId: string;
+  sessionId: string;
+  userId: string | null;
+  product: string;
+  scopes: string;
+  email: string;
+  googleSub: string;
+  grantedScopes: string;
+  accessToken: EncryptedSecret;
+  refreshToken: EncryptedSecret;
+  accessTokenExpiresAt: number;
+  refreshedAt: number | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface TokenStore {
   createSession(session: SessionRecord): Promise<void>;
   getSession(id: string): Promise<SessionRecord | null>;
@@ -54,6 +87,21 @@ export interface TokenStore {
   deleteConnection(owner: ConnectionOwner): Promise<StoredConnection | null>;
   updateConnectionSecrets(connection: StoredConnection): Promise<void>;
   setOrganization(owner: ConnectionOwner, organizationId: string): Promise<boolean>;
+  getGoogleGrant(sessionId: string, googleSub: string): Promise<GoogleGrantRecord | null>;
+  insertGoogleGrant(grant: GoogleGrantRecord): Promise<void>;
+  updateGoogleGrant(grant: GoogleGrantRecord): Promise<void>;
+  listGoogleConnections(sessionId: string): Promise<GoogleConnectionRecord[]>;
+  upsertGoogleConnection(input: {
+    id: string;
+    grantId: string;
+    sessionId: string;
+    product: string;
+    scopes: string;
+    createdAt: number;
+    updatedAt: number;
+  }): Promise<void>;
+  deleteGoogleConnection(sessionId: string, product: string): Promise<boolean>;
+  deleteGoogleGrant(sessionId: string, grantId: string): Promise<void>;
   ping(): Promise<{ tables: string[] }>;
   close(): Promise<void>;
 }
@@ -110,6 +158,7 @@ export function openTokenStore(filename: string): TokenStore {
   `);
   ensureOauthStates(db);
   ensureConnections(db);
+  ensureGoogle(db);
 
   if (persistent) {
     chmodSync(filename, 0o600);
@@ -186,6 +235,56 @@ export function openTokenStore(filename: string): TokenStore {
   const moveConnection = db.prepare(
     'UPDATE zoho_connections SET session_id = ?, user_id = ? WHERE session_id = ?',
   );
+  const googleGrantColumns = `id, session_id, user_id, google_sub, email,
+    access_iv, access_tag, access_ciphertext,
+    refresh_iv, refresh_tag, refresh_ciphertext,
+    access_expires_at, granted_scopes, refreshed_at, created_at, updated_at`;
+  const selectGoogleGrant = db.prepare(
+    `SELECT ${googleGrantColumns} FROM google_grants WHERE session_id = ? AND google_sub = ?`,
+  );
+  const insertGoogleGrant = db.prepare(
+    `INSERT INTO google_grants (
+      id, session_id, user_id, google_sub, email,
+      access_iv, access_tag, access_ciphertext,
+      refresh_iv, refresh_tag, refresh_ciphertext,
+      access_expires_at, granted_scopes, refreshed_at, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  );
+  const updateGoogleGrant = db.prepare(
+    `UPDATE google_grants
+     SET email = ?, access_iv = ?, access_tag = ?, access_ciphertext = ?,
+         refresh_iv = ?, refresh_tag = ?, refresh_ciphertext = ?,
+         access_expires_at = ?, granted_scopes = ?, refreshed_at = ?, updated_at = ?
+     WHERE id = ? AND session_id = ?`,
+  );
+  const listGoogleConnections = db.prepare(
+    `SELECT c.id AS connection_id, c.grant_id, c.product, c.scopes,
+            c.created_at AS connection_created_at, c.updated_at AS connection_updated_at,
+            g.id, g.session_id, g.user_id, g.google_sub, g.email,
+            g.access_iv, g.access_tag, g.access_ciphertext,
+            g.refresh_iv, g.refresh_tag, g.refresh_ciphertext,
+            g.access_expires_at, g.granted_scopes, g.refreshed_at, g.created_at, g.updated_at
+     FROM google_connections c
+     JOIN google_grants g ON g.id = c.grant_id AND g.session_id = c.session_id
+     WHERE c.session_id = ?`,
+  );
+  const upsertGoogleConnection = db.prepare(
+    `INSERT INTO google_connections (id, grant_id, session_id, product, scopes, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(session_id, product) DO UPDATE SET
+       grant_id = excluded.grant_id,
+       scopes = excluded.scopes,
+       updated_at = excluded.updated_at`,
+  );
+  const deleteGoogleConnection = db.prepare(
+    'DELETE FROM google_connections WHERE session_id = ? AND product = ?',
+  );
+  const deleteGoogleConnectionsForGrant = db.prepare(
+    'DELETE FROM google_connections WHERE grant_id = ? AND session_id = ?',
+  );
+  const deleteGoogleGrant = db.prepare(
+    'DELETE FROM google_grants WHERE id = ? AND session_id = ?',
+  );
 
   function transaction(run: () => void): void {
     db.exec('BEGIN IMMEDIATE');
@@ -211,6 +310,12 @@ export function openTokenStore(filename: string): TokenStore {
       transaction(() => {
         insertSession.run(next.id, next.createdAt, next.expiresAt, next.userId);
         moveConnection.run(next.id, next.userId, sessionId);
+        db.prepare('UPDATE google_grants SET session_id = ?, user_id = ? WHERE session_id = ?').run(
+          next.id,
+          next.userId,
+          sessionId,
+        );
+        db.prepare('UPDATE google_connections SET session_id = ? WHERE session_id = ?').run(next.id, sessionId);
         deleteStatesForSession.run(sessionId);
         deleteSession.run(sessionId);
       });
@@ -296,15 +401,187 @@ export function openTokenStore(filename: string): TokenStore {
       );
       return Number(result.changes) === 1;
     },
+    async getGoogleGrant(sessionId, googleSub) {
+      return mapGoogleGrant(selectGoogleGrant.get(sessionId, googleSub) as unknown as GoogleGrantRow | undefined);
+    },
+    async insertGoogleGrant(grant) {
+      insertGoogleGrant.run(...googleGrantValues(grant));
+    },
+    async updateGoogleGrant(grant) {
+      updateGoogleGrant.run(
+        grant.email,
+        grant.accessToken.iv,
+        grant.accessToken.tag,
+        grant.accessToken.ciphertext,
+        grant.refreshToken.iv,
+        grant.refreshToken.tag,
+        grant.refreshToken.ciphertext,
+        grant.accessTokenExpiresAt,
+        grant.grantedScopes,
+        grant.refreshedAt,
+        grant.updatedAt,
+        grant.id,
+        grant.sessionId,
+      );
+    },
+    async listGoogleConnections(sessionId) {
+      const rows = listGoogleConnections.all(sessionId) as unknown as GoogleConnectionRow[];
+      return rows.map((row) => mapGoogleConnection(row)).filter((row): row is GoogleConnectionRecord => row !== null);
+    },
+    async upsertGoogleConnection(input) {
+      upsertGoogleConnection.run(
+        input.id,
+        input.grantId,
+        input.sessionId,
+        input.product,
+        input.scopes,
+        input.createdAt,
+        input.updatedAt,
+      );
+    },
+    async deleteGoogleConnection(sessionId, product) {
+      const result = deleteGoogleConnection.run(sessionId, product);
+      return Number(result.changes) === 1;
+    },
+    async deleteGoogleGrant(sessionId, grantId) {
+      deleteGoogleConnectionsForGrant.run(grantId, sessionId);
+      deleteGoogleGrant.run(grantId, sessionId);
+    },
     async ping() {
       const rows = db
-        .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('sessions', 'oauth_states', 'zoho_connections') ORDER BY name`)
+        .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('sessions', 'oauth_states', 'zoho_connections', 'google_grants', 'google_connections') ORDER BY name`)
         .all() as { name: string }[];
       return { tables: rows.map((row) => row.name) };
     },
     async close() {
       db.close();
     },
+  };
+}
+
+function ensureGoogle(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS google_grants (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      user_id TEXT,
+      google_sub TEXT NOT NULL,
+      email TEXT NOT NULL,
+      access_iv TEXT NOT NULL,
+      access_tag TEXT NOT NULL,
+      access_ciphertext TEXT NOT NULL,
+      refresh_iv TEXT NOT NULL,
+      refresh_tag TEXT NOT NULL,
+      refresh_ciphertext TEXT NOT NULL,
+      access_expires_at INTEGER NOT NULL,
+      granted_scopes TEXT NOT NULL,
+      refreshed_at INTEGER,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      FOREIGN KEY (session_id) REFERENCES sessions(id),
+      UNIQUE (session_id, google_sub)
+    );
+    CREATE TABLE IF NOT EXISTS google_connections (
+      id TEXT PRIMARY KEY,
+      grant_id TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      product TEXT NOT NULL,
+      scopes TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      FOREIGN KEY (grant_id) REFERENCES google_grants(id),
+      FOREIGN KEY (session_id) REFERENCES sessions(id),
+      UNIQUE (session_id, product)
+    );
+  `);
+}
+
+interface GoogleGrantRow {
+  id: string;
+  session_id: string;
+  user_id: string | null;
+  google_sub: string;
+  email: string;
+  access_iv: string;
+  access_tag: string;
+  access_ciphertext: string;
+  refresh_iv: string;
+  refresh_tag: string;
+  refresh_ciphertext: string;
+  access_expires_at: number;
+  granted_scopes: string;
+  refreshed_at: number | null;
+  created_at: number;
+  updated_at: number;
+}
+
+interface GoogleConnectionRow extends GoogleGrantRow {
+  connection_id: string;
+  grant_id: string;
+  product: string;
+  scopes: string;
+  connection_created_at: number;
+  connection_updated_at: number;
+}
+
+function googleGrantValues(grant: GoogleGrantRecord): Array<string | number | null> {
+  return [
+    grant.id,
+    grant.sessionId,
+    grant.userId,
+    grant.googleSub,
+    grant.email,
+    grant.accessToken.iv,
+    grant.accessToken.tag,
+    grant.accessToken.ciphertext,
+    grant.refreshToken.iv,
+    grant.refreshToken.tag,
+    grant.refreshToken.ciphertext,
+    grant.accessTokenExpiresAt,
+    grant.grantedScopes,
+    grant.refreshedAt,
+    grant.createdAt,
+    grant.updatedAt,
+  ];
+}
+
+function mapGoogleGrant(row: GoogleGrantRow | undefined): GoogleGrantRecord | null {
+  if (!row || typeof row.id !== 'string') return null;
+  return {
+    id: row.id,
+    sessionId: row.session_id,
+    userId: typeof row.user_id === 'string' ? row.user_id : null,
+    googleSub: row.google_sub,
+    email: row.email,
+    accessToken: {
+      iv: row.access_iv,
+      tag: row.access_tag,
+      ciphertext: row.access_ciphertext,
+    },
+    refreshToken: {
+      iv: row.refresh_iv,
+      tag: row.refresh_tag,
+      ciphertext: row.refresh_ciphertext,
+    },
+    accessTokenExpiresAt: Number(row.access_expires_at),
+    grantedScopes: row.granted_scopes,
+    refreshedAt: row.refreshed_at === null || row.refreshed_at === undefined ? null : Number(row.refreshed_at),
+    createdAt: Number(row.created_at),
+    updatedAt: Number(row.updated_at),
+  };
+}
+
+function mapGoogleConnection(row: GoogleConnectionRow | undefined): GoogleConnectionRecord | null {
+  const grant = mapGoogleGrant(row);
+  if (!grant || !row || typeof row.product !== 'string' || typeof row.connection_id !== 'string') return null;
+  return {
+    ...grant,
+    id: row.connection_id,
+    grantId: row.grant_id,
+    product: row.product,
+    scopes: row.scopes,
+    createdAt: Number(row.connection_created_at),
+    updatedAt: Number(row.connection_updated_at),
   };
 }
 

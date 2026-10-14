@@ -36,13 +36,11 @@ export const INTEGRATIONS: Integration[] = [
   { id: 'pipedrive', name: 'Pipedrive', description: 'Track deals and sales activities.', category: 'crm', color: '#1a1a1a', initials: 'PD', icon: 'TrendingUp' },
 
   // Email & Messaging
-  { id: 'gmail', name: 'Gmail', description: 'Access authorized business email.', category: 'email', color: '#ea4335', initials: 'GM', icon: 'Mail' },
   { id: 'outlook', name: 'Microsoft Outlook', description: 'Connect email and business communications.', category: 'email', color: '#0078d4', initials: 'OL', icon: 'Inbox' },
   { id: 'slack', name: 'Slack', description: 'Connect team conversations.', category: 'email', color: '#4a154b', initials: 'SL', icon: 'MessageSquare' },
   { id: 'whatsapp', name: 'WhatsApp Business', description: 'Connect business messaging.', category: 'email', color: '#25d366', initials: 'WA', icon: 'MessageCircle' },
 
   // Calendar
-  { id: 'google-calendar', name: 'Google Calendar', description: 'Access authorized events and schedules.', category: 'calendar', color: '#4285f4', initials: 'GC', icon: 'Calendar' },
   { id: 'outlook-calendar', name: 'Outlook Calendar', description: 'Connect work calendars.', category: 'calendar', color: '#0078d4', initials: 'OC', icon: 'CalendarDays' },
   { id: 'calendly', name: 'Calendly', description: 'Connect scheduling information.', category: 'calendar', color: '#006bff', initials: 'CL', icon: 'Clock' },
 
@@ -53,7 +51,6 @@ export const INTEGRATIONS: Integration[] = [
   { id: 'notion', name: 'Notion', description: 'Workspace information and documents.', category: 'project', color: '#111111', initials: 'NT', icon: 'FileText' },
 
   // Files & Documents
-  { id: 'google-drive', name: 'Google Drive', description: 'Business files and documents.', category: 'files', color: '#0f9d58', initials: 'GD', icon: 'Folder' },
   { id: 'dropbox', name: 'Dropbox', description: 'Store and access shared files.', category: 'files', color: '#0061ff', initials: 'DB', icon: 'HardDrive' },
   { id: 'docusign', name: 'DocuSign', description: 'Electronic signatures and agreements.', category: 'files', color: '#f4d03f', initials: 'DS', icon: 'PenTool' },
 

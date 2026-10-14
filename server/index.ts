@@ -1,4 +1,5 @@
 import { loadConfig } from './config.ts';
+import { loadGoogleConfig } from './google-config.ts';
 import { createZohoServer } from './app.ts';
 import { openConfiguredStore } from './open-store.ts';
 
@@ -13,7 +14,11 @@ try {
 }
 
 const store = await openConfiguredStore(config);
-const server = createZohoServer({ config, store });
+const server = createZohoServer({
+  config,
+  store,
+  googleConfig: loadGoogleConfig(process.env, config.production),
+});
 
 server.listen(config.port, '127.0.0.1', () => {
   console.info(`[zoho] API listening on http://127.0.0.1:${config.port}`);

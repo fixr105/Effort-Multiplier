@@ -6,6 +6,9 @@ import {
 } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import type { AppConfig } from './config.ts';
+import type { GoogleConfigState } from './google-config.ts';
+import { handleGoogleRequest } from './google-app.ts';
+import type { GoogleOAuth } from './google-oauth.ts';
 import { decryptString, encryptString } from './crypto.ts';
 import { assertAccountsOrigin, DomainError } from './domains.ts';
 import {
@@ -66,6 +69,8 @@ export interface ServerDeps {
   fetchImpl?: typeof fetch;
   now?: () => number;
   logger?: Logger;
+  googleConfig?: GoogleConfigState;
+  googleOAuth?: GoogleOAuth;
 }
 
 interface ActiveSession {
@@ -160,6 +165,11 @@ export async function handleZohoRequest(
   const statusRoute = path.match(/^\/api\/integrations\/([a-z0-9-]+)\/status$/);
   if (statusRoute && method === 'GET') {
     await handleStatus(req, res, deps, statusRoute[1] ?? '');
+    return;
+  }
+
+  if (path.startsWith('/api/integrations/google')) {
+    await handleGoogleRequest(req, res, deps);
     return;
   }
 
@@ -783,7 +793,7 @@ function persistenceName(deps: ServerDeps): 'postgres' | 'sqlite' | 'unavailable
   return 'sqlite';
 }
 
-const REQUIRED_TABLES = ['oauth_states', 'sessions', 'zoho_connections'];
+const REQUIRED_TABLES = ['oauth_states', 'sessions', 'zoho_connections', 'google_grants', 'google_connections'];
 
 async function handleHealth(res: ServerResponse, deps: ServerDeps): Promise<void> {
   const persistence = persistenceName(deps);

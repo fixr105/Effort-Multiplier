@@ -1,13 +1,13 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { loadConfig, type AppConfig } from './config.ts';
-import { handleZohoRequest, IDENTITY } from './app.ts';
+import { loadConfig } from './config.ts';
+import { loadGoogleConfig } from './google-config.ts';
+import { handleZohoRequest, IDENTITY, type ServerDeps } from './app.ts';
 import { openConfiguredStore } from './open-store.ts';
 import { openPostgresStore } from './postgres-store.ts';
-import type { TokenStore } from './store.ts';
 
-let ready: Promise<{ config: AppConfig; store: TokenStore }> | null = null;
+let ready: Promise<ServerDeps> | null = null;
 
-const REQUIRED_TABLES = ['oauth_states', 'sessions', 'zoho_connections'];
+const REQUIRED_TABLES = ['oauth_states', 'sessions', 'zoho_connections', 'google_grants', 'google_connections'];
 
 async function reportDatabaseHealth(res: ServerResponse): Promise<void> {
   const databaseUrl = process.env.DATABASE_URL?.trim() || '';
@@ -56,12 +56,12 @@ function restoreForwardedPath(req: IncomingMessage): void {
   req.url = query ? `${url.pathname}?${query}` : url.pathname;
 }
 
-function context(): Promise<{ config: AppConfig; store: TokenStore }> {
+function context(): Promise<ServerDeps> {
   if (!ready) {
     ready = (async () => {
       const config = loadConfig(process.env);
       const store = await openConfiguredStore(config);
-      return { config, store };
+      return { config, store, googleConfig: loadGoogleConfig(process.env, config.production) };
     })();
   }
   return ready;

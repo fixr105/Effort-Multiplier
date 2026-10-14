@@ -45,6 +45,17 @@ function safeMessage(error: unknown): string {
   return message.replace(/postgres(?:ql)?:\/\/\S+/gi, '[redacted]').slice(0, 180);
 }
 
+function restoreForwardedPath(req: IncomingMessage): void {
+  const url = new URL(req.url ?? '/', 'http://localhost');
+  const forwarded = url.searchParams.get('em_path');
+  if (forwarded === null) return;
+  url.searchParams.delete('em_path');
+  const suffix = forwarded.replace(/^\/+/, '');
+  url.pathname = suffix ? `/api/${suffix}` : '/api';
+  const query = url.searchParams.toString();
+  req.url = query ? `${url.pathname}?${query}` : url.pathname;
+}
+
 function context(): Promise<{ config: AppConfig; store: TokenStore }> {
   if (!ready) {
     ready = (async () => {
@@ -57,6 +68,7 @@ function context(): Promise<{ config: AppConfig; store: TokenStore }> {
 }
 
 export default async function handler(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  restoreForwardedPath(req);
   const path = (req.url ?? '/').split('?')[0] ?? '/';
   if (path === '/api/health' || path === '/health') {
     await reportDatabaseHealth(res);

@@ -1972,6 +1972,16 @@ function safeMessage(error) {
   const message = error instanceof Error ? error.message : "Database check failed.";
   return message.replace(/postgres(?:ql)?:\/\/\S+/gi, "[redacted]").slice(0, 180);
 }
+function restoreForwardedPath(req) {
+  const url = new URL(req.url ?? "/", "http://localhost");
+  const forwarded = url.searchParams.get("em_path");
+  if (forwarded === null) return;
+  url.searchParams.delete("em_path");
+  const suffix = forwarded.replace(/^\/+/, "");
+  url.pathname = suffix ? `/api/${suffix}` : "/api";
+  const query = url.searchParams.toString();
+  req.url = query ? `${url.pathname}?${query}` : url.pathname;
+}
 function context() {
   if (!ready) {
     ready = (async () => {
@@ -1983,6 +1993,7 @@ function context() {
   return ready;
 }
 async function handler(req, res) {
+  restoreForwardedPath(req);
   const path = (req.url ?? "/").split("?")[0] ?? "/";
   if (path === "/api/health" || path === "/health") {
     await reportDatabaseHealth(res);

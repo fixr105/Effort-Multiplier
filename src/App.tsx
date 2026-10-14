@@ -57,6 +57,9 @@ function App() {
   const [hydrated, setHydrated] = useState(false);
   const [search, setSearch] = useState('');
   const [activeFilter, setActiveFilter] = useState('all');
+  const [statusFilter, setStatusFilter] = useState<
+    'all' | 'connected' | 'available' | 'coming_soon' | 'setup_required'
+  >('all');
   const [connectTarget, setConnectTarget] = useState<Integration | null>(null);
   const [disconnectTarget, setDisconnectTarget] = useState<Integration | null>(null);
   const [loading, setLoading] = useState(true);
@@ -118,18 +121,6 @@ function App() {
 
   const visibleIntegrations = library === 'zoho' ? zohoIntegrations : [...zohoIntegrations, ...INTEGRATIONS];
 
-  const filteredIntegrations = useMemo(() => {
-    return visibleIntegrations.filter((integration) => {
-      const matchesFilter =
-        activeFilter === 'all' || integration.category === activeFilter;
-      const matchesSearch =
-        search === '' ||
-        integration.name.toLowerCase().includes(search.toLowerCase()) ||
-        integration.description.toLowerCase().includes(search.toLowerCase());
-      return matchesFilter && matchesSearch;
-    });
-  }, [visibleIntegrations, search, activeFilter]);
-
   const displayConnections = useMemo(() => {
     const next = { ...connections };
     for (const product of zoho.products) {
@@ -138,6 +129,25 @@ function App() {
     }
     return next;
   }, [connections, zoho.products]);
+
+  const filteredIntegrations = useMemo(() => {
+    return visibleIntegrations.filter((integration) => {
+      const product = zoho.products.find((item) => item.cardId === integration.id);
+      const matchesCategory =
+        activeFilter === 'all' || integration.category === activeFilter;
+      const matchesStatus =
+        statusFilter === 'all' ||
+        (statusFilter === 'connected' && !!displayConnections[integration.id]) ||
+        (statusFilter === 'available' && product?.availability === 'available' && !product.connected) ||
+        (statusFilter === 'coming_soon' && product?.availability === 'planned') ||
+        (statusFilter === 'setup_required' && product?.availability === 'setup_required');
+      const matchesSearch =
+        search === '' ||
+        integration.name.toLowerCase().includes(search.toLowerCase()) ||
+        integration.description.toLowerCase().includes(search.toLowerCase());
+      return matchesCategory && matchesStatus && matchesSearch;
+    });
+  }, [visibleIntegrations, search, activeFilter, statusFilter, zoho.products, displayConnections]);
 
   const connectedIntegrations = useMemo(
     () => [...zohoIntegrations, ...INTEGRATIONS].filter((integration) => displayConnections[integration.id]),
@@ -184,6 +194,29 @@ function App() {
                 All tools
               </button>
             </div>
+            <div className="flex flex-wrap gap-2 mb-3">
+              {(
+                [
+                  ['all', 'All'],
+                  ['connected', 'Connected'],
+                  ['available', 'Available'],
+                  ['coming_soon', 'Coming soon'],
+                  ['setup_required', 'Setup required'],
+                ] as const
+              ).map(([id, label]) => (
+                <button
+                  key={id}
+                  onClick={() => setStatusFilter(id)}
+                  className={`px-3.5 py-1.5 rounded-full text-xs font-medium border ${
+                    statusFilter === id
+                      ? 'bg-gray-900 text-white border-gray-900'
+                      : 'bg-white text-gray-600 border-gray-200 hover:border-gray-300'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
             <CategoryFilters
               activeFilter={activeFilter}
               onFilterChange={setActiveFilter}
@@ -217,7 +250,7 @@ function App() {
           <p className="text-xs text-gray-400">
             {loading
               ? 'Loading integrations...'
-              : `${filteredIntegrations.length} ${filteredIntegrations.length === 1 ? 'integration' : 'integrations'}${activeFilter !== 'all' || search ? ' found' : ' available'}`}
+              : `${filteredIntegrations.length} ${filteredIntegrations.length === 1 ? 'integration' : 'integrations'}${activeFilter !== 'all' || statusFilter !== 'all' || search ? ' found' : ' available'}`}
           </p>
         </div>
 
@@ -248,26 +281,35 @@ function App() {
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {filteredIntegrations.map((integration) => {
               const product = zoho.products.find((item) => item.cardId === integration.id);
-              const live = product?.availability === 'available';
-              const blocked = product && product.availability !== 'available';
+              const status = product
+                ? product.connected
+                  ? 'connected'
+                  : product.availability === 'available'
+                    ? 'not_connected'
+                    : product.availability === 'setup_required'
+                      ? 'setup_required'
+                      : 'coming_soon'
+                : undefined;
               return (
                 <IntegrationCard
                   key={integration.id}
                   integration={integration}
                   connected={!!displayConnections[integration.id]}
+                  status={status}
+                  statusNote={product?.note}
                   detail={
                     product
                       ? zoho.checking
                         ? 'Checking Zoho connection...'
                         : product.connected
                           ? 'Live Zoho connection'
-                          : product.availability === 'available'
-                            ? 'Signs in with Zoho'
-                            : product.note
+                          : product.note
                       : undefined
                   }
-                  connectHref={live && !product.connected ? `/api/integrations/zoho/${product.id}/connect` : undefined}
-                  connectDisabled={Boolean(product && (zoho.checking || blocked))}
+                  connectHref={
+                    status === 'not_connected' ? `/api/integrations/zoho/${product?.id}/connect` : undefined
+                  }
+                  connectDisabled={Boolean(product && zoho.checking)}
                   onPreview={product?.connected ? () => void zoho.preview(product.id, product.name) : undefined}
                   previewDisabled={zoho.leadsLoading}
                   onConnect={setConnectTarget}

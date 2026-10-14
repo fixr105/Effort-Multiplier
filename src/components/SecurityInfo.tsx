@@ -13,8 +13,10 @@ export function SecurityInfo() {
           </h2>
         </div>
         <p className="text-sm text-gray-500 leading-relaxed max-w-2xl">
-          Each integration will request only the permissions it needs. You control
-          which accounts are connected and can disconnect them at any time.
+          Each integration requests only the read permission it needs. A connection
+          belongs to this browser session. Effort Multiplier does not have founder
+          accounts yet, so this is not multi-founder isolation. You can disconnect
+          a product at any time.
         </p>
         <div className="flex flex-col sm:flex-row gap-4 mt-6">
           <FeatureBadge

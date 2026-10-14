@@ -82,9 +82,49 @@ const PEOPLE_ORIGINS: Record<string, string> = {
   'https://www.zohoapis.ca': 'https://people.zohocloud.ca',
 };
 
-export function serviceOrigin(apiOrigin: string, service: 'desk' | 'people'): string {
+const PROJECTS_ORIGINS: Record<string, string> = {
+  'https://www.zohoapis.com': 'https://projectsapi.zoho.com',
+  'https://www.zohoapis.eu': 'https://projectsapi.zoho.eu',
+  'https://www.zohoapis.in': 'https://projectsapi.zoho.in',
+  'https://www.zohoapis.com.au': 'https://projectsapi.zoho.com.au',
+  'https://www.zohoapis.jp': 'https://projectsapi.zoho.jp',
+  'https://www.zohoapis.sa': 'https://projectsapi.zoho.sa',
+  'https://www.zohoapis.ca': 'https://projectsapi.zohocloud.ca',
+};
+
+const CALENDAR_ORIGINS: Record<string, string> = {
+  'https://www.zohoapis.com': 'https://calendar.zoho.com',
+  'https://www.zohoapis.eu': 'https://calendar.zoho.eu',
+  'https://www.zohoapis.in': 'https://calendar.zoho.in',
+  'https://www.zohoapis.com.au': 'https://calendar.zoho.com.au',
+  'https://www.zohoapis.jp': 'https://calendar.zoho.jp',
+  'https://www.zohoapis.sa': 'https://calendar.zoho.sa',
+  'https://www.zohoapis.ca': 'https://calendar.zohocloud.ca',
+};
+
+const SIGN_ORIGINS: Record<string, string> = {
+  'https://www.zohoapis.com': 'https://sign.zoho.com',
+  'https://www.zohoapis.eu': 'https://sign.zoho.eu',
+  'https://www.zohoapis.in': 'https://sign.zoho.in',
+  'https://www.zohoapis.com.au': 'https://sign.zoho.com.au',
+  'https://www.zohoapis.jp': 'https://sign.zoho.jp',
+  'https://www.zohoapis.sa': 'https://sign.zoho.sa',
+  'https://www.zohoapis.ca': 'https://sign.zohocloud.ca',
+};
+
+const SERVICE_ORIGINS = {
+  desk: DESK_ORIGINS,
+  people: PEOPLE_ORIGINS,
+  projects: PROJECTS_ORIGINS,
+  calendar: CALENDAR_ORIGINS,
+  sign: SIGN_ORIGINS,
+} as const;
+
+export type ZohoService = keyof typeof SERVICE_ORIGINS;
+
+export function serviceOrigin(apiOrigin: string, service: ZohoService): string {
   const origin = assertApiOrigin(apiOrigin);
-  const mapped = service === 'desk' ? DESK_ORIGINS[origin] : PEOPLE_ORIGINS[origin];
+  const mapped = SERVICE_ORIGINS[service][origin];
   if (!mapped) throw new DomainError('invalid_api_domain');
   return mapped;
 }

@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
 import { LOCAL_REDIRECT_URI, PRODUCTION_REDIRECT_URI, loadConfig } from './config.ts';
 import { decryptString, encryptString } from './crypto.ts';
-import { assertAccountsOrigin, assertApiOrigin, DomainError } from './domains.ts';
+import { assertAccountsOrigin, assertApiOrigin, DomainError, serviceOrigin } from './domains.ts';
 import { createZohoServer } from './app.ts';
 import { signSession, verifySessionToken } from './session.ts';
 import { openTokenStore } from './store.ts';
@@ -185,6 +185,10 @@ describe('Zoho domains and token encryption', () => {
     assert.throws(() => assertAccountsOrigin('https://evil.example'), DomainError);
     assert.throws(() => assertApiOrigin('https://www.zohoapis.in.evil.example'), DomainError);
     assert.throws(() => assertAccountsOrigin('https://accounts.zoho.in/oauth/v2/token'), DomainError);
+    assert.equal(serviceOrigin('https://www.zohoapis.in', 'projects'), 'https://projectsapi.zoho.in');
+    assert.equal(serviceOrigin('https://www.zohoapis.eu', 'calendar'), 'https://calendar.zoho.eu');
+    assert.equal(serviceOrigin('https://www.zohoapis.com', 'sign'), 'https://sign.zoho.com');
+    assert.throws(() => serviceOrigin('https://sandbox.zohoapis.com', 'projects'), DomainError);
   });
 
   it('detects tampered ciphertext', () => {
@@ -554,6 +558,20 @@ describe('Zoho OAuth routes', () => {
       });
       assert.equal(blocked.status, 403);
     }, { fetchImpl: successfulTokenFetch });
+  });
+
+  it('requests read-only project scopes and does not start Creator OAuth', async () => {
+    await withServer(async ({ base }) => {
+      const projects = await call(base, '/api/integrations/zoho/projects/connect');
+      const location = new URL(projects.headers.location ?? '');
+      assert.equal(
+        location.searchParams.get('scope'),
+        'ZohoProjects.portals.READ,ZohoProjects.projects.READ,ZohoProjects.tasks.READ',
+      );
+      const creator = await call(base, '/api/integrations/zoho/creator/connect');
+      assert.equal(creator.status, 409);
+      assert.equal(JSON.parse(creator.body).error, 'planned');
+    });
   });
 });
 

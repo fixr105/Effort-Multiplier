@@ -1,6 +1,8 @@
 # Zoho integrations
 
-Zoho CRM, Books, Inventory, People, and Desk can connect separately. Each product keeps its own tokens. The other Zoho cards are listed as planned and do not start OAuth. Non-Zoho cards still use the demo connection stored only in this browser.
+Zoho CRM, Books, Inventory, People, Desk, Projects, Calendar, and Sign can connect separately. Each product keeps its own tokens. The other Zoho cards are Coming soon or Setup required and do not start OAuth. Zoho Creator needs an app owner and link name before a connector can read records, and that step is not built. Non-Zoho cards still use the demo connection stored only in this browser.
+
+Before multiple founders share one deployment, Effort Multiplier needs real accounts. Until then, tokens stay encrypted and bound to the browser session that created them. A later account system can set the nullable `user_id`. The browser cannot set it. New Zoho scopes also have to be enabled on the existing Zoho API Console client or Zoho will refuse consent.
 
 There are no Effort Multiplier accounts yet. A signed browser session keeps one founder's tokens separate from another browser. That session is not production multi-tenant identity. The token store keeps a nullable `user_id` for a later authenticated account. The browser cannot set that id.
 

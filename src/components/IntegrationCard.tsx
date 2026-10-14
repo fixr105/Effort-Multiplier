@@ -3,6 +3,8 @@ import type { Integration } from '@/types';
 import { CATEGORY_LABELS } from '@/data/integrations';
 import { AppIcon } from './AppIcon';
 
+type CardStatus = 'connected' | 'not_connected' | 'coming_soon' | 'setup_required';
+
 interface IntegrationCardProps {
   integration: Integration;
   connected: boolean;
@@ -13,6 +15,8 @@ interface IntegrationCardProps {
   connectDisabled?: boolean;
   onPreview?: () => void;
   previewDisabled?: boolean;
+  status?: CardStatus;
+  statusNote?: string;
 }
 
 export function IntegrationCard({
@@ -25,8 +29,29 @@ export function IntegrationCard({
   connectDisabled = false,
   onPreview,
   previewDisabled = false,
+  status,
+  statusNote,
 }: IntegrationCardProps) {
   const detailText = detail ?? (connected ? 'Active demo connection' : 'Ready to connect');
+  const badge = status ?? (connected ? 'connected' : 'not_connected');
+  const badgeLabel = {
+    connected: 'Connected',
+    not_connected: 'Not connected',
+    coming_soon: 'Coming soon',
+    setup_required: 'Setup required',
+  }[badge];
+  const badgeClass = {
+    connected: 'bg-emerald-50 text-emerald-700',
+    not_connected: 'bg-gray-50 text-gray-500',
+    coming_soon: 'bg-amber-50 text-amber-800',
+    setup_required: 'bg-sky-50 text-sky-800',
+  }[badge];
+  const dotClass = {
+    connected: 'bg-emerald-500',
+    not_connected: 'bg-gray-300',
+    coming_soon: 'bg-amber-500',
+    setup_required: 'bg-sky-500',
+  }[badge];
   return (
     <div className="group bg-white border border-gray-200 rounded-2xl p-5 flex flex-col gap-4 transition-all duration-200 hover:border-gray-300 hover:shadow-[0_2px_12px_rgba(0,0,0,0.04)]">
       <div className="flex items-start gap-3.5">
@@ -40,23 +65,10 @@ export function IntegrationCard({
           </span>
         </div>
         <div
-          className={`flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] font-medium shrink-0 transition-all duration-200 ${
-            connected
-              ? 'bg-emerald-50 text-emerald-700'
-              : 'bg-gray-50 text-gray-400'
-          }`}
+          className={`flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] font-medium shrink-0 ${badgeClass}`}
         >
-          {connected ? (
-            <>
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-              Connected
-            </>
-          ) : (
-            <>
-              <span className="w-1.5 h-1.5 rounded-full bg-gray-300" />
-              Not connected
-            </>
-          )}
+          <span className={`w-1.5 h-1.5 rounded-full ${dotClass}`} />
+          {badgeLabel}
         </div>
       </div>
 
@@ -87,6 +99,16 @@ export function IntegrationCard({
               className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-medium text-gray-600 bg-white border border-gray-200 hover:bg-gray-50 hover:text-gray-900 transition-all duration-200"
             >
               Disconnect
+            </button>
+          ) : badge === 'coming_soon' || badge === 'setup_required' ? (
+            <button
+              type="button"
+              disabled
+              title={statusNote}
+              aria-label={`${badgeLabel} for ${integration.name}`}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-medium text-gray-700 bg-white border border-gray-200 cursor-not-allowed"
+            >
+              {badgeLabel}
             </button>
           ) : connectHref ? (
             <a

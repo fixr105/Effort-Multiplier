@@ -493,9 +493,43 @@ var PEOPLE_ORIGINS = {
   "https://www.zohoapis.sa": "https://people.zoho.sa",
   "https://www.zohoapis.ca": "https://people.zohocloud.ca"
 };
+var PROJECTS_ORIGINS = {
+  "https://www.zohoapis.com": "https://projectsapi.zoho.com",
+  "https://www.zohoapis.eu": "https://projectsapi.zoho.eu",
+  "https://www.zohoapis.in": "https://projectsapi.zoho.in",
+  "https://www.zohoapis.com.au": "https://projectsapi.zoho.com.au",
+  "https://www.zohoapis.jp": "https://projectsapi.zoho.jp",
+  "https://www.zohoapis.sa": "https://projectsapi.zoho.sa",
+  "https://www.zohoapis.ca": "https://projectsapi.zohocloud.ca"
+};
+var CALENDAR_ORIGINS = {
+  "https://www.zohoapis.com": "https://calendar.zoho.com",
+  "https://www.zohoapis.eu": "https://calendar.zoho.eu",
+  "https://www.zohoapis.in": "https://calendar.zoho.in",
+  "https://www.zohoapis.com.au": "https://calendar.zoho.com.au",
+  "https://www.zohoapis.jp": "https://calendar.zoho.jp",
+  "https://www.zohoapis.sa": "https://calendar.zoho.sa",
+  "https://www.zohoapis.ca": "https://calendar.zohocloud.ca"
+};
+var SIGN_ORIGINS = {
+  "https://www.zohoapis.com": "https://sign.zoho.com",
+  "https://www.zohoapis.eu": "https://sign.zoho.eu",
+  "https://www.zohoapis.in": "https://sign.zoho.in",
+  "https://www.zohoapis.com.au": "https://sign.zoho.com.au",
+  "https://www.zohoapis.jp": "https://sign.zoho.jp",
+  "https://www.zohoapis.sa": "https://sign.zoho.sa",
+  "https://www.zohoapis.ca": "https://sign.zohocloud.ca"
+};
+var SERVICE_ORIGINS = {
+  desk: DESK_ORIGINS,
+  people: PEOPLE_ORIGINS,
+  projects: PROJECTS_ORIGINS,
+  calendar: CALENDAR_ORIGINS,
+  sign: SIGN_ORIGINS
+};
 function serviceOrigin(apiOrigin, service) {
   const origin = assertApiOrigin(apiOrigin);
-  const mapped = service === "desk" ? DESK_ORIGINS[origin] : PEOPLE_ORIGINS[origin];
+  const mapped = SERVICE_ORIGINS[service][origin];
   if (!mapped) throw new DomainError("invalid_api_domain");
   return mapped;
 }
@@ -794,6 +828,12 @@ async function previewProduct(product, input, fetchImpl) {
       return peoplePreview(input, fetchImpl);
     case "desk":
       return deskPreview(input, fetchImpl);
+    case "projects":
+      return projectsPreview(input, fetchImpl);
+    case "calendar":
+      return calendarPreview(input, fetchImpl);
+    case "sign":
+      return signPreview(input, fetchImpl);
     default:
       throw new ZohoRequestError("provider_error");
   }
@@ -821,6 +861,15 @@ async function listOrganizations(product, input, fetchImpl) {
         "data",
         "id",
         "companyName"
+      );
+    }
+    case "projects": {
+      const origin = serviceOrigin(input.apiOrigin, "projects");
+      return readOrganizations(
+        await zohoGet(new URL("/restapi/portals/", origin), input.accessToken, fetchImpl),
+        "portals",
+        "id",
+        "name"
       );
     }
     default:
@@ -879,6 +928,85 @@ async function deskPreview(input, fetchImpl) {
     organizations,
     sections: [{ title: "Tickets", records: mapRows(payload, "data", "id", "subject", "status") }]
   };
+}
+async function projectsPreview(input, fetchImpl) {
+  const organizations = await listOrganizations("projects", input, fetchImpl);
+  if (!input.organizationId) return { sections: [], organizations };
+  const origin = serviceOrigin(input.apiOrigin, "projects");
+  const portalId = pathId(input.organizationId);
+  if (!portalId) return { sections: [], organizations };
+  const projectsUrl = new URL(`/restapi/portal/${portalId}/projects/`, origin);
+  projectsUrl.searchParams.set("index", "0");
+  projectsUrl.searchParams.set("range", String(PAGE_SIZE));
+  const projects = await zohoGet(projectsUrl, input.accessToken, fetchImpl);
+  const projectRecords = mapRows(projects, "projects", "id", "name", "status");
+  const firstProject = projectRecords[0];
+  const sections = [{ title: "Projects", records: projectRecords }];
+  if (firstProject) {
+    const projectId = pathId(firstProject.id);
+    if (projectId) {
+      const tasksUrl = new URL(`/restapi/portal/${portalId}/projects/${projectId}/tasks/`, origin);
+      tasksUrl.searchParams.set("index", "0");
+      tasksUrl.searchParams.set("range", String(PAGE_SIZE));
+      const tasks = await zohoGet(tasksUrl, input.accessToken, fetchImpl);
+      sections.push({
+        title: "Tasks",
+        records: mapRows(tasks, "tasks", "id", "name", "status")
+      });
+    }
+  }
+  return { organizations, sections };
+}
+async function calendarPreview(input, fetchImpl) {
+  const origin = serviceOrigin(input.apiOrigin, "calendar");
+  const calendarsUrl = new URL("/api/v1/calendars", origin);
+  calendarsUrl.searchParams.set("category", "own");
+  const calendars = await zohoGet(calendarsUrl, input.accessToken, fetchImpl);
+  const listed = arrayField(calendars, "calendars").map((item) => asRecord(item)).filter((item) => item !== null);
+  const chosen = listed.find((calendar) => calendar.isdefault === true) ?? listed[0] ?? null;
+  const uid = pathId(text(chosen, "uid") ?? "");
+  const sections = [];
+  if (uid) {
+    const start = /* @__PURE__ */ new Date();
+    const end = new Date(start.getTime() + 7 * 24 * 60 * 60 * 1e3);
+    const eventsUrl = new URL(`/api/v1/calendars/${encodeURIComponent(uid)}/events`, origin);
+    eventsUrl.searchParams.set("range", JSON.stringify({ start: ymd(start), end: ymd(end) }));
+    const events = await zohoGet(eventsUrl, input.accessToken, fetchImpl);
+    sections.push({
+      title: "Events",
+      records: mapRows(events, "events", "uid", "title", "dateandtime")
+    });
+  }
+  return { organizations: [], sections };
+}
+async function signPreview(input, fetchImpl) {
+  const origin = serviceOrigin(input.apiOrigin, "sign");
+  const url = new URL("/api/v1/requests", origin);
+  url.searchParams.set(
+    "data",
+    JSON.stringify({
+      page_context: {
+        row_count: PAGE_SIZE,
+        start_index: 1,
+        sort_column: "created_time",
+        sort_order: "DESC"
+      }
+    })
+  );
+  const payload = await zohoGet(url, input.accessToken, fetchImpl);
+  return {
+    organizations: [],
+    sections: [{ title: "Signature requests", records: mapRows(payload, "requests", "request_id", "request_name", "request_status") }]
+  };
+}
+function ymd(date) {
+  const year = date.getUTCFullYear();
+  const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(date.getUTCDate()).padStart(2, "0");
+  return `${year}${month}${day}`;
+}
+function pathId(value) {
+  return /^[A-Za-z0-9_.:@-]{1,200}$/.test(value) ? value : null;
 }
 function leadRecord(lead) {
   const title = [lead.firstName, lead.lastName].filter(Boolean).join(" ") || "Unnamed lead";
@@ -942,11 +1070,14 @@ function mapRows(payload, listKey, idKey, titleKey, detailKey) {
   for (const item of arrayField(payload, listKey)) {
     const record2 = asRecord(item);
     const id = text(record2, idKey);
-    if (!id) continue;
+    if (!record2 || !id) continue;
+    const detailValue = record2[detailKey];
+    const detailRecord = asRecord(detailValue);
+    const detail = detailRecord ? text(detailRecord, "start") ?? text(detailRecord, "timezone") ?? "" : text(record2, detailKey) ?? "";
     records.push({
       id,
       title: text(record2, titleKey) ?? "Untitled",
-      detail: text(record2, detailKey) ?? ""
+      detail
     });
     if (records.length === PAGE_SIZE) break;
   }
@@ -992,7 +1123,7 @@ function codeOf(payload) {
 
 // src/data/zohoProducts.ts
 var PLANNED_DOCS = "https://www.zoho.com/developer/";
-function planned(id, name, description, category, initials, icon) {
+function planned(id, name, description, category, initials, icon, note = "Coming soon. This connector is not built yet, so Connect stays off.") {
   return {
     id,
     cardId: `zoho-${id}`,
@@ -1004,7 +1135,7 @@ function planned(id, name, description, category, initials, icon) {
     availability: "planned",
     scopes: [],
     docsUrl: PLANNED_DOCS,
-    note: "This product is listed, but its API is not connected yet."
+    note
   };
 }
 var ZOHO_PRODUCTS = [
@@ -1081,17 +1212,69 @@ var ZOHO_PRODUCTS = [
     note: "Read-only tickets. Choose a Desk organization when Zoho returns more than one."
   },
   planned("assist", "Zoho Assist", "Remote support session information.", "support", "ZA", "Headset"),
-  planned("mail", "Zoho Mail", "Business mailboxes.", "email", "ZM", "Mail"),
-  planned("calendar", "Zoho Calendar", "Events and schedules.", "calendar", "CL", "Calendar"),
-  planned("workdrive", "Zoho WorkDrive", "Team files and folders.", "files", "WD", "Folder"),
+  planned(
+    "mail",
+    "Zoho Mail",
+    "Business mailboxes.",
+    "email",
+    "ZM",
+    "Mail",
+    "Coming soon. A read-only mailbox preview is not built, so this app does not request mail access."
+  ),
+  {
+    id: "calendar",
+    cardId: "zoho-calendar",
+    name: "Zoho Calendar",
+    description: "Events and schedules.",
+    category: "calendar",
+    initials: "CL",
+    icon: "Calendar",
+    availability: "available",
+    scopes: ["ZohoCalendar.calendar.READ", "ZohoCalendar.event.READ"],
+    docsUrl: "https://www.zoho.com/calendar/help/api/oauth2-user-guide.html",
+    note: "Read-only events from your own calendars for the next seven days."
+  },
+  planned(
+    "workdrive",
+    "Zoho WorkDrive",
+    "Team files and folders.",
+    "files",
+    "WD",
+    "Folder",
+    "Coming soon. Team folders can be listed with WorkDrive.team.READ and WorkDrive.teamfolders.READ, and that connector is not built yet."
+  ),
   planned("writer", "Zoho Writer", "Documents.", "files", "WR", "FileText"),
   planned("sheet", "Zoho Sheet", "Spreadsheets.", "files", "SH", "FileText"),
   planned("cliq", "Zoho Cliq", "Team conversations.", "email", "CQ", "MessageCircle"),
   planned("connect", "Zoho Connect", "Internal company network.", "email", "CN", "MessageSquare"),
   planned("meeting", "Zoho Meeting", "Meetings and webinars.", "calendar", "MT", "CalendarDays"),
-  planned("projects", "Zoho Projects", "Projects and tasks.", "project", "PJ", "CheckSquare"),
+  {
+    id: "projects",
+    cardId: "zoho-projects",
+    name: "Zoho Projects",
+    description: "Projects and tasks.",
+    category: "project",
+    initials: "PJ",
+    icon: "CheckSquare",
+    availability: "available",
+    scopes: ["ZohoProjects.portals.READ", "ZohoProjects.projects.READ", "ZohoProjects.tasks.READ"],
+    docsUrl: "https://www.zoho.com/projects/help/rest-api/projects-api.html",
+    note: "Read-only projects and tasks. Choose a portal when Zoho returns more than one."
+  },
   planned("sprints", "Zoho Sprints", "Agile sprints and work items.", "project", "SP", "ListTodo"),
-  planned("sign", "Zoho Sign", "Signature requests.", "files", "SG", "PenTool"),
+  {
+    id: "sign",
+    cardId: "zoho-sign",
+    name: "Zoho Sign",
+    description: "Signature requests.",
+    category: "files",
+    initials: "SG",
+    icon: "PenTool",
+    availability: "available",
+    scopes: ["ZohoSign.documents.READ"],
+    docsUrl: "https://www.zoho.com/sign/api/document-managment/get-document-list.html",
+    note: "Read-only signature requests."
+  },
   planned("campaigns", "Zoho Campaigns", "Email campaigns.", "marketing", "CP", "Send"),
   planned(
     "marketing-automation",
@@ -1104,7 +1287,19 @@ var ZOHO_PRODUCTS = [
   planned("commerce", "Zoho Commerce", "Store orders and catalog.", "ecommerce", "CO", "ShoppingBag"),
   planned("social", "Zoho Social", "Social media accounts.", "marketing", "SO", "MessageCircle"),
   planned("analytics", "Zoho Analytics", "Reports and dashboards.", "accounting", "AN", "BarChart3"),
-  planned("creator", "Zoho Creator", "Custom apps and forms.", "project", "CR", "SquareDot"),
+  {
+    id: "creator",
+    cardId: "zoho-creator",
+    name: "Zoho Creator",
+    description: "Custom apps and forms.",
+    category: "project",
+    initials: "CR",
+    icon: "SquareDot",
+    availability: "setup_required",
+    scopes: [],
+    docsUrl: "https://www.zoho.com/creator/help/api/v2/",
+    note: "Setup required. Creator records belong to a specific app, and this connector does not ask for the app owner or link name yet."
+  },
   planned("forms", "Zoho Forms", "Form submissions.", "files", "FM", "FileText"),
   planned("flow", "Zoho Flow", "Integration workflows.", "project", "FL", "TrendingUp"),
   planned("directory", "Zoho Directory", "Organization users and apps.", "hr", "DR", "BadgeCheck")
@@ -1708,7 +1903,7 @@ function statusBody(connection, product) {
   };
 }
 function organizationProducts(product) {
-  return product === "books" || product === "inventory" || product === "desk";
+  return product === "books" || product === "inventory" || product === "desk" || product === "projects";
 }
 function needsSingleOrganization(product, organizationId, organizations) {
   return organizationProducts(product) && !organizationId && organizations.length === 1;

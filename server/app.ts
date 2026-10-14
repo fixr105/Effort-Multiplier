@@ -761,7 +761,7 @@ function statusBody(connection: StoredConnection | null, product: string) {
 }
 
 function organizationProducts(product: string): boolean {
-  return product === 'books' || product === 'inventory' || product === 'desk';
+  return product === 'books' || product === 'inventory' || product === 'desk' || product === 'projects';
 }
 
 function needsSingleOrganization(

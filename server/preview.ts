@@ -40,6 +40,12 @@ export async function previewProduct(
       return peoplePreview(input, fetchImpl);
     case 'desk':
       return deskPreview(input, fetchImpl);
+    case 'projects':
+      return projectsPreview(input, fetchImpl);
+    case 'calendar':
+      return calendarPreview(input, fetchImpl);
+    case 'sign':
+      return signPreview(input, fetchImpl);
     default:
       throw new ZohoRequestError('provider_error');
   }
@@ -72,6 +78,15 @@ export async function listOrganizations(
         'data',
         'id',
         'companyName',
+      );
+    }
+    case 'projects': {
+      const origin = serviceOrigin(input.apiOrigin, 'projects');
+      return readOrganizations(
+        await zohoGet(new URL('/restapi/portals/', origin), input.accessToken, fetchImpl),
+        'portals',
+        'id',
+        'name',
       );
     }
     default:
@@ -146,6 +161,99 @@ async function deskPreview(
     organizations,
     sections: [{ title: 'Tickets', records: mapRows(payload, 'data', 'id', 'subject', 'status') }],
   };
+}
+
+async function projectsPreview(
+  input: { apiOrigin: string; accessToken: string; organizationId: string | null },
+  fetchImpl: typeof fetch,
+): Promise<ProductPreview> {
+  const organizations = await listOrganizations('projects', input, fetchImpl);
+  if (!input.organizationId) return { sections: [], organizations };
+  const origin = serviceOrigin(input.apiOrigin, 'projects');
+  const portalId = pathId(input.organizationId);
+  if (!portalId) return { sections: [], organizations };
+  const projectsUrl = new URL(`/restapi/portal/${portalId}/projects/`, origin);
+  projectsUrl.searchParams.set('index', '0');
+  projectsUrl.searchParams.set('range', String(PAGE_SIZE));
+  const projects = await zohoGet(projectsUrl, input.accessToken, fetchImpl);
+  const projectRecords = mapRows(projects, 'projects', 'id', 'name', 'status');
+  const firstProject = projectRecords[0];
+  const sections: PreviewSection[] = [{ title: 'Projects', records: projectRecords }];
+  if (firstProject) {
+    const projectId = pathId(firstProject.id);
+    if (projectId) {
+      const tasksUrl = new URL(`/restapi/portal/${portalId}/projects/${projectId}/tasks/`, origin);
+      tasksUrl.searchParams.set('index', '0');
+      tasksUrl.searchParams.set('range', String(PAGE_SIZE));
+      const tasks = await zohoGet(tasksUrl, input.accessToken, fetchImpl);
+      sections.push({
+        title: 'Tasks',
+        records: mapRows(tasks, 'tasks', 'id', 'name', 'status'),
+      });
+    }
+  }
+  return { organizations, sections };
+}
+
+async function calendarPreview(
+  input: { apiOrigin: string; accessToken: string },
+  fetchImpl: typeof fetch,
+): Promise<ProductPreview> {
+  const origin = serviceOrigin(input.apiOrigin, 'calendar');
+  const calendarsUrl = new URL('/api/v1/calendars', origin);
+  calendarsUrl.searchParams.set('category', 'own');
+  const calendars = await zohoGet(calendarsUrl, input.accessToken, fetchImpl);
+  const listed = arrayField(calendars, 'calendars').map((item) => asRecord(item)).filter((item) => item !== null);
+  const chosen = listed.find((calendar) => calendar.isdefault === true) ?? listed[0] ?? null;
+  const uid = pathId(text(chosen, 'uid') ?? '');
+  const sections: PreviewSection[] = [];
+  if (uid) {
+    const start = new Date();
+    const end = new Date(start.getTime() + 7 * 24 * 60 * 60 * 1000);
+    const eventsUrl = new URL(`/api/v1/calendars/${encodeURIComponent(uid)}/events`, origin);
+    eventsUrl.searchParams.set('range', JSON.stringify({ start: ymd(start), end: ymd(end) }));
+    const events = await zohoGet(eventsUrl, input.accessToken, fetchImpl);
+    sections.push({
+      title: 'Events',
+      records: mapRows(events, 'events', 'uid', 'title', 'dateandtime'),
+    });
+  }
+  return { organizations: [], sections };
+}
+
+async function signPreview(
+  input: { apiOrigin: string; accessToken: string },
+  fetchImpl: typeof fetch,
+): Promise<ProductPreview> {
+  const origin = serviceOrigin(input.apiOrigin, 'sign');
+  const url = new URL('/api/v1/requests', origin);
+  url.searchParams.set(
+    'data',
+    JSON.stringify({
+      page_context: {
+        row_count: PAGE_SIZE,
+        start_index: 1,
+        sort_column: 'created_time',
+        sort_order: 'DESC',
+      },
+    }),
+  );
+  const payload = await zohoGet(url, input.accessToken, fetchImpl);
+  return {
+    organizations: [],
+    sections: [{ title: 'Signature requests', records: mapRows(payload, 'requests', 'request_id', 'request_name', 'request_status') }],
+  };
+}
+
+function ymd(date: Date): string {
+  const year = date.getUTCFullYear();
+  const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(date.getUTCDate()).padStart(2, '0');
+  return `${year}${month}${day}`;
+}
+
+function pathId(value: string): string | null {
+  return /^[A-Za-z0-9_.:@-]{1,200}$/.test(value) ? value : null;
 }
 
 function leadRecord(lead: LeadPreview): PreviewRecord {
@@ -229,11 +337,16 @@ function mapRows(
   for (const item of arrayField(payload, listKey)) {
     const record = asRecord(item);
     const id = text(record, idKey);
-    if (!id) continue;
+    if (!record || !id) continue;
+    const detailValue = record[detailKey];
+    const detailRecord = asRecord(detailValue);
+    const detail = detailRecord
+      ? text(detailRecord, 'start') ?? text(detailRecord, 'timezone') ?? ''
+      : text(record, detailKey) ?? '';
     records.push({
       id,
       title: text(record, titleKey) ?? 'Untitled',
-      detail: text(record, detailKey) ?? '',
+      detail,
     });
     if (records.length === PAGE_SIZE) break;
   }

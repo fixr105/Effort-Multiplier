@@ -12,7 +12,8 @@ import { DisconnectDialog } from '@/components/DisconnectDialog';
 import { SecurityInfo } from '@/components/SecurityInfo';
 import { NoResults } from '@/components/NoResults';
 import { ZohoLeadsPreview } from '@/components/ZohoLeadsPreview';
-import { ZOHO_CONNECT_PATH, ZOHO_INTEGRATION_ID } from '@/zohoApi';
+import { isZohoCardId, zohoProductByCardId } from '@/data/zohoProducts';
+import type { ZohoCatalogProduct } from '@/zohoApi';
 import { useZohoConnection } from '@/useZohoConnection';
 
 const STORAGE_KEY = 'em_connection_state';
@@ -28,10 +29,27 @@ function loadConnectionState(): ConnectionState {
 }
 
 function withoutZoho(state: ConnectionState): ConnectionState {
-  if (!state[ZOHO_INTEGRATION_ID]) return state;
   const next = { ...state };
-  delete next[ZOHO_INTEGRATION_ID];
-  return next;
+  let changed = false;
+  for (const id of Object.keys(next)) {
+    if (isZohoCardId(id)) {
+      delete next[id];
+      changed = true;
+    }
+  }
+  return changed ? next : state;
+}
+
+function zohoCard(product: ZohoCatalogProduct): Integration {
+  return {
+    id: product.cardId,
+    name: product.name,
+    description: product.description,
+    category: product.category as Integration['category'],
+    color: '#e42527',
+    initials: product.initials,
+    icon: product.icon,
+  };
 }
 
 function App() {
@@ -42,6 +60,7 @@ function App() {
   const [connectTarget, setConnectTarget] = useState<Integration | null>(null);
   const [disconnectTarget, setDisconnectTarget] = useState<Integration | null>(null);
   const [loading, setLoading] = useState(true);
+  const [library, setLibrary] = useState<'all' | 'zoho'>('zoho');
   const zoho = useZohoConnection();
   const disconnectZohoConnection = zoho.disconnect;
 
@@ -68,15 +87,16 @@ function App() {
   }, [connections, hydrated]);
 
   const handleConfirmConnect = useCallback((integration: Integration) => {
-    if (integration.id === ZOHO_INTEGRATION_ID) return;
+    if (isZohoCardId(integration.id)) return;
     setConnections((prev) => ({ ...prev, [integration.id]: true }));
     setConnectTarget(null);
   }, []);
 
   const handleConfirmDisconnect = useCallback(
     async (integration: Integration) => {
-      if (integration.id === ZOHO_INTEGRATION_ID) {
-        await disconnectZohoConnection();
+      const product = zohoProductByCardId(integration.id);
+      if (product) {
+        await disconnectZohoConnection(product.id);
         setDisconnectTarget(null);
         return;
       }
@@ -91,8 +111,15 @@ function App() {
     [disconnectZohoConnection],
   );
 
+  const zohoIntegrations = useMemo(
+    () => zoho.products.map(zohoCard),
+    [zoho.products],
+  );
+
+  const visibleIntegrations = library === 'zoho' ? zohoIntegrations : [...zohoIntegrations, ...INTEGRATIONS];
+
   const filteredIntegrations = useMemo(() => {
-    return INTEGRATIONS.filter((integration) => {
+    return visibleIntegrations.filter((integration) => {
       const matchesFilter =
         activeFilter === 'all' || integration.category === activeFilter;
       const matchesSearch =
@@ -101,18 +128,20 @@ function App() {
         integration.description.toLowerCase().includes(search.toLowerCase());
       return matchesFilter && matchesSearch;
     });
-  }, [search, activeFilter]);
+  }, [visibleIntegrations, search, activeFilter]);
 
   const displayConnections = useMemo(() => {
     const next = { ...connections };
-    delete next[ZOHO_INTEGRATION_ID];
-    if (zoho.connected) next[ZOHO_INTEGRATION_ID] = true;
+    for (const product of zoho.products) {
+      if (product.connected) next[product.cardId] = true;
+      else delete next[product.cardId];
+    }
     return next;
-  }, [connections, zoho.connected]);
+  }, [connections, zoho.products]);
 
   const connectedIntegrations = useMemo(
-    () => INTEGRATIONS.filter((integration) => displayConnections[integration.id]),
-    [displayConnections],
+    () => [...zohoIntegrations, ...INTEGRATIONS].filter((integration) => displayConnections[integration.id]),
+    [displayConnections, zohoIntegrations],
   );
 
   const connectedCount = connectedIntegrations.length;
@@ -123,7 +152,7 @@ function App() {
 
       <main className="max-w-6xl mx-auto px-5 sm:px-6 lg:px-8">
         <IntroSection
-          totalIntegrations={INTEGRATIONS.length}
+          totalIntegrations={zohoIntegrations.length + INTEGRATIONS.length}
           connectedCount={connectedCount}
         />
 
@@ -137,6 +166,24 @@ function App() {
         <div className="flex flex-col gap-4 mb-6">
           <SearchBar value={search} onChange={setSearch} />
           <div className="chip-scroll overflow-x-auto sm:overflow-visible -mx-5 px-5 sm:mx-0 sm:px-0">
+            <div className="flex items-center gap-2 mb-3">
+              <button
+                onClick={() => setLibrary('zoho')}
+                className={`px-3.5 py-2 rounded-lg text-xs font-medium ${
+                  library === 'zoho' ? 'bg-gray-900 text-white' : 'bg-white text-gray-600 border border-gray-200'
+                }`}
+              >
+                Zoho products
+              </button>
+              <button
+                onClick={() => setLibrary('all')}
+                className={`px-3.5 py-2 rounded-lg text-xs font-medium ${
+                  library === 'all' ? 'bg-gray-900 text-white' : 'bg-white text-gray-600 border border-gray-200'
+                }`}
+              >
+                All tools
+              </button>
+            </div>
             <CategoryFilters
               activeFilter={activeFilter}
               onFilterChange={setActiveFilter}
@@ -155,12 +202,12 @@ function App() {
             <p className="text-sm">{zoho.banner}</p>
             {zoho.showReconnect ? (
               <a
-                href={ZOHO_CONNECT_PATH}
+                href={`/api/integrations/zoho/${zoho.reconnectProduct ?? 'crm'}/connect`}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="self-start px-3.5 py-2 rounded-lg text-xs font-medium text-white bg-gray-900 hover:bg-gray-800"
               >
-                Reconnect Zoho CRM
+                Reconnect
               </a>
             ) : null}
           </div>
@@ -176,10 +223,15 @@ function App() {
 
         {zoho.previewOpen ? (
           <ZohoLeadsPreview
+            title={zoho.previewTitle}
             apiDomain={zoho.apiDomain}
-            leads={zoho.leads}
+            sections={zoho.sections}
+            organizations={zoho.organizations}
+            needsOrganization={zoho.needsOrganization}
             loading={zoho.leadsLoading}
             error={zoho.leadsError}
+            reconnectHref={`/api/integrations/zoho/${zoho.previewProductId ?? 'crm'}/connect`}
+            onChooseOrganization={(organizationId) => void zoho.chooseOrganization(organizationId)}
             onClose={zoho.closePreview}
           />
         ) : null}
@@ -195,24 +247,28 @@ function App() {
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {filteredIntegrations.map((integration) => {
-              const isZoho = integration.id === ZOHO_INTEGRATION_ID;
+              const product = zoho.products.find((item) => item.cardId === integration.id);
+              const live = product?.availability === 'available';
+              const blocked = product && product.availability !== 'available';
               return (
                 <IntegrationCard
                   key={integration.id}
                   integration={integration}
                   connected={!!displayConnections[integration.id]}
                   detail={
-                    isZoho
+                    product
                       ? zoho.checking
                         ? 'Checking Zoho connection...'
-                        : zoho.connected
-                          ? 'Live Zoho CRM connection'
-                          : 'Signs in with Zoho'
+                        : product.connected
+                          ? 'Live Zoho connection'
+                          : product.availability === 'available'
+                            ? 'Signs in with Zoho'
+                            : product.note
                       : undefined
                   }
-                  connectHref={isZoho ? ZOHO_CONNECT_PATH : undefined}
-                  connectDisabled={isZoho && zoho.checking}
-                  onPreview={isZoho && zoho.connected ? () => void zoho.preview() : undefined}
+                  connectHref={live && !product.connected ? `/api/integrations/zoho/${product.id}/connect` : undefined}
+                  connectDisabled={Boolean(product && (zoho.checking || blocked))}
+                  onPreview={product?.connected ? () => void zoho.preview(product.id, product.name) : undefined}
                   previewDisabled={zoho.leadsLoading}
                   onConnect={setConnectTarget}
                   onDisconnect={setDisconnectTarget}
@@ -226,7 +282,7 @@ function App() {
       </main>
 
       <ConnectModal
-        integration={connectTarget?.id === ZOHO_INTEGRATION_ID ? null : connectTarget}
+        integration={connectTarget && isZohoCardId(connectTarget.id) ? null : connectTarget}
         onClose={() => setConnectTarget(null)}
         onConfirm={handleConfirmConnect}
       />

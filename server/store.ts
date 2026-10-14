@@ -23,33 +23,39 @@ export interface SessionRecord {
 export interface ConnectionOwner {
   sessionId: string;
   userId: string | null;
+  product: string;
 }
 
 export interface StoredConnection {
   id: string;
   sessionId: string;
   userId: string | null;
+  product: string;
   accountsOrigin: string;
   apiOrigin: string;
   accessToken: EncryptedSecret;
   refreshToken: EncryptedSecret;
   accessTokenExpiresAt: number;
   scope: string;
+  organizationId: string | null;
   createdAt: number;
   updatedAt: number;
 }
 
 export interface TokenStore {
-  createSession(session: SessionRecord): void;
-  getSession(id: string): SessionRecord | null;
-  rotateSession(sessionId: string, now: number, next: SessionRecord): SessionRecord | null;
-  saveOauthState(state: string, sessionId: string, expiresAt: number): void;
-  consumeOauthState(state: string, sessionId: string, now: number): boolean;
-  saveConnection(connection: StoredConnection): void;
-  getConnection(owner: ConnectionOwner): StoredConnection | null;
-  deleteConnection(owner: ConnectionOwner): StoredConnection | null;
-  updateConnectionSecrets(connection: StoredConnection): void;
-  close(): void;
+  createSession(session: SessionRecord): Promise<void>;
+  getSession(id: string): Promise<SessionRecord | null>;
+  rotateSession(sessionId: string, now: number, next: SessionRecord): Promise<SessionRecord | null>;
+  saveOauthState(state: string, sessionId: string, expiresAt: number, product: string): Promise<void>;
+  consumeOauthState(state: string, sessionId: string, now: number): Promise<string | null>;
+  saveConnection(connection: StoredConnection): Promise<void>;
+  getConnection(owner: ConnectionOwner): Promise<StoredConnection | null>;
+  listConnections(owner: Pick<ConnectionOwner, 'sessionId' | 'userId'>): Promise<StoredConnection[]>;
+  deleteConnection(owner: ConnectionOwner): Promise<StoredConnection | null>;
+  updateConnectionSecrets(connection: StoredConnection): Promise<void>;
+  setOrganization(owner: ConnectionOwner, organizationId: string): Promise<boolean>;
+  ping(): Promise<{ tables: string[] }>;
+  close(): Promise<void>;
 }
 
 interface SessionRow {
@@ -63,6 +69,7 @@ interface ConnectionRow {
   id: string;
   session_id: string;
   user_id: string | null;
+  product: string;
   accounts_origin: string;
   api_origin: string;
   access_iv: string;
@@ -73,6 +80,7 @@ interface ConnectionRow {
   refresh_ciphertext: string;
   access_expires_at: number;
   scope: string;
+  organization_id: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -99,37 +107,9 @@ export function openTokenStore(filename: string): TokenStore {
       user_id TEXT
     );
 
-    CREATE TABLE IF NOT EXISTS oauth_states (
-      state TEXT PRIMARY KEY,
-      session_id TEXT NOT NULL,
-      expires_at INTEGER NOT NULL,
-      used_at INTEGER,
-      FOREIGN KEY (session_id) REFERENCES sessions(id)
-    );
-
-    CREATE TABLE IF NOT EXISTS zoho_connections (
-      id TEXT PRIMARY KEY,
-      session_id TEXT NOT NULL UNIQUE,
-      user_id TEXT,
-      accounts_origin TEXT NOT NULL,
-      api_origin TEXT NOT NULL,
-      access_iv TEXT NOT NULL,
-      access_tag TEXT NOT NULL,
-      access_ciphertext TEXT NOT NULL,
-      refresh_iv TEXT NOT NULL,
-      refresh_tag TEXT NOT NULL,
-      refresh_ciphertext TEXT NOT NULL,
-      access_expires_at INTEGER NOT NULL,
-      scope TEXT NOT NULL,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL,
-      FOREIGN KEY (session_id) REFERENCES sessions(id)
-    );
-
-    CREATE UNIQUE INDEX IF NOT EXISTS zoho_connections_user_id
-      ON zoho_connections(user_id)
-      WHERE user_id IS NOT NULL;
   `);
+  ensureOauthStates(db);
+  ensureConnections(db);
 
   if (persistent) {
     chmodSync(filename, 0o600);
@@ -151,40 +131,50 @@ export function openTokenStore(filename: string): TokenStore {
     'DELETE FROM oauth_states WHERE session_id = ?',
   );
   const insertState = db.prepare(
-    'INSERT INTO oauth_states (state, session_id, expires_at, used_at) VALUES (?, ?, ?, NULL)',
+    'INSERT INTO oauth_states (state, session_id, product, expires_at, used_at) VALUES (?, ?, ?, ?, NULL)',
   );
   const consumeState = db.prepare(
     `UPDATE oauth_states
      SET used_at = ?
-     WHERE state = ? AND session_id = ? AND used_at IS NULL AND expires_at > ?`,
+     WHERE state = ? AND session_id = ? AND used_at IS NULL AND expires_at > ?
+     RETURNING product`,
   );
   const deleteExpiredStates = db.prepare(
     'DELETE FROM oauth_states WHERE expires_at <= ? OR used_at IS NOT NULL',
   );
+  const connectionColumns = `id, session_id, user_id, product, accounts_origin, api_origin,
+            access_iv, access_tag, access_ciphertext,
+            refresh_iv, refresh_tag, refresh_ciphertext,
+            access_expires_at, scope, organization_id, created_at, updated_at`;
   const insertConnection = db.prepare(
     `INSERT INTO zoho_connections (
-      id, session_id, user_id, accounts_origin, api_origin,
+      id, session_id, user_id, product, accounts_origin, api_origin,
       access_iv, access_tag, access_ciphertext,
       refresh_iv, refresh_tag, refresh_ciphertext,
-      access_expires_at, scope, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      access_expires_at, scope, organization_id, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
-  const deleteConnectionBySession = db.prepare(
-    'DELETE FROM zoho_connections WHERE session_id = ?',
+  const deleteConnectionByOwner = db.prepare(
+    'DELETE FROM zoho_connections WHERE session_id = ? AND product = ?',
   );
   const selectConnectionBySession = db.prepare(
-    `SELECT id, session_id, user_id, accounts_origin, api_origin,
-            access_iv, access_tag, access_ciphertext,
-            refresh_iv, refresh_tag, refresh_ciphertext,
-            access_expires_at, scope, created_at, updated_at
-     FROM zoho_connections WHERE session_id = ?`,
+    `SELECT ${connectionColumns}
+     FROM zoho_connections WHERE session_id = ? AND product = ?`,
   );
   const selectConnectionByUser = db.prepare(
-    `SELECT id, session_id, user_id, accounts_origin, api_origin,
-            access_iv, access_tag, access_ciphertext,
-            refresh_iv, refresh_tag, refresh_ciphertext,
-            access_expires_at, scope, created_at, updated_at
-     FROM zoho_connections WHERE user_id = ?`,
+    `SELECT ${connectionColumns}
+     FROM zoho_connections WHERE user_id = ? AND product = ?`,
+  );
+  const listBySession = db.prepare(
+    `SELECT ${connectionColumns} FROM zoho_connections WHERE session_id = ?`,
+  );
+  const listByUser = db.prepare(
+    `SELECT ${connectionColumns} FROM zoho_connections WHERE user_id = ?`,
+  );
+  const setOrganizationStatement = db.prepare(
+    `UPDATE zoho_connections
+     SET organization_id = ?, updated_at = ?
+     WHERE session_id = ? AND product = ?`,
   );
   const updateSecrets = db.prepare(
     `UPDATE zoho_connections
@@ -209,13 +199,13 @@ export function openTokenStore(filename: string): TokenStore {
   }
 
   return {
-    createSession(session) {
+    async createSession(session) {
       insertSession.run(session.id, session.createdAt, session.expiresAt, session.userId);
     },
-    getSession(id) {
+    async getSession(id) {
       return mapSession(selectSession.get(id) as SessionRow | undefined);
     },
-    rotateSession(sessionId, now, next) {
+    async rotateSession(sessionId, now, next) {
       const current = selectSession.get(sessionId) as SessionRow | undefined;
       if (!current || current.expires_at <= now) return null;
       transaction(() => {
@@ -226,21 +216,22 @@ export function openTokenStore(filename: string): TokenStore {
       });
       return next;
     },
-    saveOauthState(state, sessionId, expiresAt) {
+    async saveOauthState(state, sessionId, expiresAt, product) {
       deleteExpiredStates.run(expiresAt);
-      insertState.run(state, sessionId, expiresAt);
+      insertState.run(state, sessionId, product, expiresAt);
     },
-    consumeOauthState(state, sessionId, now) {
-      const result = consumeState.run(now, state, sessionId, now);
-      return Number(result.changes) === 1;
+    async consumeOauthState(state, sessionId, now) {
+      const row = consumeState.get(now, state, sessionId, now) as { product: string } | undefined;
+      return typeof row?.product === 'string' ? row.product : null;
     },
-    saveConnection(connection) {
+    async saveConnection(connection) {
       transaction(() => {
-        deleteConnectionBySession.run(connection.sessionId);
+        deleteConnectionByOwner.run(connection.sessionId, connection.product);
         insertConnection.run(
           connection.id,
           connection.sessionId,
           connection.userId,
+          connection.product,
           connection.accountsOrigin,
           connection.apiOrigin,
           connection.accessToken.iv,
@@ -251,29 +242,38 @@ export function openTokenStore(filename: string): TokenStore {
           connection.refreshToken.ciphertext,
           connection.accessTokenExpiresAt,
           connection.scope,
+          connection.organizationId,
           connection.createdAt,
           connection.updatedAt,
         );
       });
     },
-    getConnection(owner) {
+    async getConnection(owner) {
       if (owner.userId) {
         const byUser = mapConnection(
-          selectConnectionByUser.get(owner.userId) as ConnectionRow | undefined,
+          selectConnectionByUser.get(owner.userId, owner.product) as ConnectionRow | undefined,
         );
         if (byUser) return byUser;
       }
       return mapConnection(
-        selectConnectionBySession.get(owner.sessionId) as ConnectionRow | undefined,
+        selectConnectionBySession.get(owner.sessionId, owner.product) as ConnectionRow | undefined,
       );
     },
-    deleteConnection(owner) {
-      const existing = this.getConnection(owner);
+    async listConnections(owner) {
+      const rows = (
+        owner.userId
+          ? listByUser.all(owner.userId)
+          : listBySession.all(owner.sessionId)
+      ) as unknown as ConnectionRow[];
+      return rows.map((row) => mapConnection(row)).filter((row): row is StoredConnection => row !== null);
+    },
+    async deleteConnection(owner) {
+      const existing = await this.getConnection(owner);
       if (!existing) return null;
-      deleteConnectionBySession.run(existing.sessionId);
+      deleteConnectionByOwner.run(existing.sessionId, existing.product);
       return existing;
     },
-    updateConnectionSecrets(connection) {
+    async updateConnectionSecrets(connection) {
       updateSecrets.run(
         connection.accessToken.iv,
         connection.accessToken.tag,
@@ -287,10 +287,136 @@ export function openTokenStore(filename: string): TokenStore {
         connection.id,
       );
     },
-    close() {
+    async setOrganization(owner, organizationId) {
+      const result = setOrganizationStatement.run(
+        organizationId,
+        Date.now(),
+        owner.sessionId,
+        owner.product,
+      );
+      return Number(result.changes) === 1;
+    },
+    async ping() {
+      const rows = db
+        .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('sessions', 'oauth_states', 'zoho_connections') ORDER BY name`)
+        .all() as { name: string }[];
+      return { tables: rows.map((row) => row.name) };
+    },
+    async close() {
       db.close();
     },
   };
+}
+
+function ensureOauthStates(db: DatabaseSync): void {
+  const columns = tableColumns(db, 'oauth_states');
+  if (columns.length === 0) {
+    db.exec(`
+      CREATE TABLE oauth_states (
+        state TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        product TEXT NOT NULL,
+        expires_at INTEGER NOT NULL,
+        used_at INTEGER,
+        FOREIGN KEY (session_id) REFERENCES sessions(id)
+      );
+    `);
+    return;
+  }
+  if (columns.includes('product')) return;
+  db.exec(`
+    ALTER TABLE oauth_states RENAME TO oauth_states_legacy;
+    CREATE TABLE oauth_states (
+      state TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      product TEXT NOT NULL,
+      expires_at INTEGER NOT NULL,
+      used_at INTEGER,
+      FOREIGN KEY (session_id) REFERENCES sessions(id)
+    );
+    INSERT INTO oauth_states (state, session_id, product, expires_at, used_at)
+    SELECT state, session_id, 'crm', expires_at, used_at FROM oauth_states_legacy;
+    DROP TABLE oauth_states_legacy;
+  `);
+}
+
+function ensureConnections(db: DatabaseSync): void {
+  const columns = tableColumns(db, 'zoho_connections');
+  if (columns.length === 0) {
+    db.exec(`
+      CREATE TABLE zoho_connections (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        user_id TEXT,
+        product TEXT NOT NULL,
+        accounts_origin TEXT NOT NULL,
+        api_origin TEXT NOT NULL,
+        access_iv TEXT NOT NULL,
+        access_tag TEXT NOT NULL,
+        access_ciphertext TEXT NOT NULL,
+        refresh_iv TEXT NOT NULL,
+        refresh_tag TEXT NOT NULL,
+        refresh_ciphertext TEXT NOT NULL,
+        access_expires_at INTEGER NOT NULL,
+        scope TEXT NOT NULL,
+        organization_id TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        FOREIGN KEY (session_id) REFERENCES sessions(id),
+        UNIQUE (session_id, product)
+      );
+      CREATE UNIQUE INDEX zoho_connections_user_product
+        ON zoho_connections(user_id, product)
+        WHERE user_id IS NOT NULL;
+    `);
+    return;
+  }
+  if (columns.includes('product')) return;
+  db.exec(`
+    ALTER TABLE zoho_connections RENAME TO zoho_connections_legacy;
+    CREATE TABLE zoho_connections (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      user_id TEXT,
+      product TEXT NOT NULL,
+      accounts_origin TEXT NOT NULL,
+      api_origin TEXT NOT NULL,
+      access_iv TEXT NOT NULL,
+      access_tag TEXT NOT NULL,
+      access_ciphertext TEXT NOT NULL,
+      refresh_iv TEXT NOT NULL,
+      refresh_tag TEXT NOT NULL,
+      refresh_ciphertext TEXT NOT NULL,
+      access_expires_at INTEGER NOT NULL,
+      scope TEXT NOT NULL,
+      organization_id TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      FOREIGN KEY (session_id) REFERENCES sessions(id),
+      UNIQUE (session_id, product)
+    );
+    INSERT INTO zoho_connections (
+      id, session_id, user_id, product, accounts_origin, api_origin,
+      access_iv, access_tag, access_ciphertext,
+      refresh_iv, refresh_tag, refresh_ciphertext,
+      access_expires_at, scope, organization_id, created_at, updated_at
+    )
+    SELECT
+      id, session_id, user_id, 'crm', accounts_origin, api_origin,
+      access_iv, access_tag, access_ciphertext,
+      refresh_iv, refresh_tag, refresh_ciphertext,
+      access_expires_at, scope, NULL, created_at, updated_at
+    FROM zoho_connections_legacy;
+    DROP TABLE zoho_connections_legacy;
+    CREATE UNIQUE INDEX zoho_connections_user_product
+      ON zoho_connections(user_id, product)
+      WHERE user_id IS NOT NULL;
+  `);
+}
+
+function tableColumns(db: DatabaseSync, table: 'oauth_states' | 'zoho_connections'): string[] {
+  const rows = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+  return rows.map((row) => row.name);
 }
 
 function isSharedTempDirectory(directory: string): boolean {
@@ -314,6 +440,7 @@ function mapConnection(row: ConnectionRow | undefined): StoredConnection | null 
     id: row.id,
     sessionId: row.session_id,
     userId: typeof row.user_id === 'string' ? row.user_id : null,
+    product: row.product,
     accountsOrigin: row.accounts_origin,
     apiOrigin: row.api_origin,
     accessToken: {
@@ -328,6 +455,7 @@ function mapConnection(row: ConnectionRow | undefined): StoredConnection | null 
     },
     accessTokenExpiresAt: asNumber(row.access_expires_at),
     scope: row.scope,
+    organizationId: typeof row.organization_id === 'string' ? row.organization_id : null,
     createdAt: asNumber(row.created_at),
     updatedAt: asNumber(row.updated_at),
   };

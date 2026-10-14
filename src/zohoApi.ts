@@ -30,7 +30,7 @@ export type ZohoReturnReason = (typeof RETURN_REASONS)[number];
 
 export type ZohoReturn =
   | { type: 'none' }
-  | { type: 'connected' }
+  | { type: 'connected'; product: string | null }
   | { type: 'error'; reason: ZohoReturnReason };
 
 const API_ERRORS = [
@@ -41,6 +41,8 @@ const API_ERRORS = [
   'provider_unavailable',
   'provider_error',
   'server_error',
+  'planned',
+  'persistence_unavailable',
 ] as const;
 
 type ApiErrorCode = (typeof API_ERRORS)[number];
@@ -73,6 +75,7 @@ export function consumeZohoReturn(): ZohoReturn {
   const url = new URL(window.location.href);
   url.searchParams.delete('zoho');
   url.searchParams.delete('reason');
+  url.searchParams.delete('product');
   window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`);
   return fromUrl;
 }
@@ -80,7 +83,10 @@ export function consumeZohoReturn(): ZohoReturn {
 export function readZohoReturn(search: string): ZohoReturn {
   const params = new URLSearchParams(search);
   const flag = params.get('zoho');
-  if (flag === 'connected') return { type: 'connected' };
+  if (flag === 'connected') {
+    const product = params.get('product');
+    return { type: 'connected', product: product && /^[a-z0-9-]{1,40}$/.test(product) ? product : null };
+  }
   if (flag === 'error') return { type: 'error', reason: parseReason(params.get('reason')) };
   return { type: 'none' };
 }
@@ -115,19 +121,23 @@ export function apiErrorMessage(payload: unknown): string {
   if (!code) return 'The request could not be completed.';
   switch (code) {
     case 'not_connected':
-      return 'Zoho CRM is not connected.';
+      return 'This Zoho product is not connected.';
     case 'rate_limited':
       return 'Zoho rate limit reached. Try again shortly.';
     case 'missing_scope':
-      return 'Zoho did not allow Leads read access. Reconnect and grant the requested permission.';
+      return 'Zoho did not allow the requested read access. Reconnect and grant that permission.';
     case 'reconnect_required':
-      return 'The Zoho connection expired. Reconnect Zoho CRM.';
+      return 'The Zoho connection expired. Reconnect this product.';
     case 'provider_unavailable':
       return 'Zoho could not be reached. No data was changed.';
     case 'provider_error':
       return 'Zoho could not complete the request.';
     case 'server_error':
       return 'The request could not be completed.';
+    case 'planned':
+      return 'This Zoho product is not available to connect yet.';
+    case 'persistence_unavailable':
+      return 'Production token storage is not configured, so Zoho was not connected.';
     default: {
       const neverCode: never = code;
       return neverCode;
@@ -176,10 +186,13 @@ export async function fetchZohoLeads(): Promise<{ leads: ZohoLead[]; apiDomain: 
   };
 }
 
-export async function disconnectZoho(): Promise<{ revoked: boolean }> {
-  const response = await fetch('/api/integrations/zoho/disconnect', {
+export async function disconnectZoho(product = 'crm'): Promise<{ revoked: boolean }> {
+  const path = product === 'crm'
+    ? '/api/integrations/zoho/disconnect'
+    : `/api/integrations/zoho/${product}/disconnect`;
+  const response = await fetch(path, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'X-EM-Request': '1' },
     body: '{}',
   });
   const payload: unknown = await response.json();
@@ -187,6 +200,114 @@ export async function disconnectZoho(): Promise<{ revoked: boolean }> {
     throw new ZohoClientError(apiErrorCode(payload) ?? 'server_error', apiErrorMessage(payload));
   }
   return { revoked: isRecord(payload) && payload.revoked === true };
+}
+
+export interface ZohoCatalogProduct {
+  id: string;
+  cardId: string;
+  name: string;
+  description: string;
+  category: string;
+  initials: string;
+  icon: string;
+  availability: 'available' | 'planned' | 'setup_required';
+  docsUrl: string;
+  note: string;
+  connected: boolean;
+  apiDomain: string | null;
+  organizationId: string | null;
+}
+
+export interface ZohoPreviewSection {
+  title: string;
+  records: { id: string; title: string; detail: string }[];
+}
+
+export interface ZohoOrganization {
+  id: string;
+  name: string;
+}
+
+export async function fetchZohoCatalog(): Promise<ZohoCatalogProduct[]> {
+  const response = await fetch('/api/integrations');
+  if (!response.ok) throw new ZohoClientError('status_unavailable', 'Zoho connection status is unavailable.');
+  const payload: unknown = await response.json();
+  if (!isRecord(payload) || !Array.isArray(payload.products)) {
+    throw new ZohoClientError('status_unavailable', 'Zoho connection status is unavailable.');
+  }
+  return payload.products.flatMap((item) => {
+    const product = toCatalogProduct(item);
+    return product ? [product] : [];
+  });
+}
+
+export async function fetchZohoPreview(product: string): Promise<{
+  apiDomain: string | null;
+  needsOrganization: boolean;
+  organizations: ZohoOrganization[];
+  sections: ZohoPreviewSection[];
+}> {
+  const response = await fetch(`/api/integrations/zoho/${product}/preview`);
+  const payload: unknown = await response.json();
+  if (!response.ok) {
+    throw new ZohoClientError(apiErrorCode(payload) ?? 'server_error', apiErrorMessage(payload));
+  }
+  if (!isRecord(payload)) throw new ZohoClientError('provider_error', 'Zoho could not complete the request.');
+  return {
+    apiDomain: typeof payload.apiDomain === 'string' ? displayApiDomain(payload.apiDomain) : null,
+    needsOrganization: payload.needsOrganization === true,
+    organizations: Array.isArray(payload.organizations)
+      ? payload.organizations.flatMap((item) => {
+          if (!isRecord(item) || typeof item.id !== 'string') return [];
+          return [{ id: item.id, name: typeof item.name === 'string' ? item.name : item.id }];
+        })
+      : [],
+    sections: Array.isArray(payload.sections) ? payload.sections.flatMap(toSection) : [],
+  };
+}
+
+export async function selectZohoOrganization(product: string, organizationId: string): Promise<void> {
+  const response = await fetch(`/api/integrations/zoho/${product}/organization`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-EM-Request': '1' },
+    body: JSON.stringify({ organizationId }),
+  });
+  const payload: unknown = await response.json();
+  if (!response.ok) {
+    throw new ZohoClientError(apiErrorCode(payload) ?? 'server_error', apiErrorMessage(payload));
+  }
+}
+
+function toCatalogProduct(value: unknown): ZohoCatalogProduct | null {
+  if (!isRecord(value) || typeof value.id !== 'string' || typeof value.cardId !== 'string') return null;
+  const availability = value.availability;
+  if (availability !== 'available' && availability !== 'planned' && availability !== 'setup_required') {
+    return null;
+  }
+  return {
+    id: value.id,
+    cardId: value.cardId,
+    name: text(value.name),
+    description: text(value.description),
+    category: text(value.category),
+    initials: text(value.initials),
+    icon: text(value.icon),
+    availability,
+    docsUrl: text(value.docsUrl),
+    note: text(value.note),
+    connected: value.connected === true,
+    apiDomain: typeof value.apiDomain === 'string' ? displayApiDomain(value.apiDomain) : null,
+    organizationId: typeof value.organizationId === 'string' ? value.organizationId : null,
+  };
+}
+
+function toSection(value: unknown): ZohoPreviewSection[] {
+  if (!isRecord(value) || typeof value.title !== 'string' || !Array.isArray(value.records)) return [];
+  const records = value.records.flatMap((item) => {
+    if (!isRecord(item) || typeof item.id !== 'string') return [];
+    return [{ id: item.id, title: text(item.title) || 'Untitled', detail: text(item.detail) }];
+  });
+  return [{ title: value.title, records }];
 }
 
 export function displayApiDomain(value: string): string | null {

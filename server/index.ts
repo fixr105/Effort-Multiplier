@@ -1,6 +1,6 @@
 import { loadConfig } from './config.ts';
 import { createZohoServer } from './app.ts';
-import { openTokenStore } from './store.ts';
+import { openConfiguredStore } from './open-store.ts';
 
 let config: ReturnType<typeof loadConfig>;
 try {
@@ -12,7 +12,7 @@ try {
   process.exit(1);
 }
 
-const store = openTokenStore(config.databasePath);
+const store = await openConfiguredStore(config);
 const server = createZohoServer({ config, store });
 
 server.listen(config.port, '127.0.0.1', () => {

@@ -1,144 +1,190 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
+import { ZOHO_PRODUCTS } from '@/data/zohoProducts';
 import {
-  disconnectZoho,
-  fetchZohoLeads,
   consumeZohoReturn,
-  fetchZohoStatus,
+  disconnectZoho,
+  fetchZohoCatalog,
+  fetchZohoPreview,
+  selectZohoOrganization,
   zohoReturnMessage,
   ZohoClientError,
-  type ZohoLead,
+  type ZohoCatalogProduct,
+  type ZohoOrganization,
+  type ZohoPreviewSection,
 } from '@/zohoApi';
+
+function fallbackCatalog(): ZohoCatalogProduct[] {
+  return ZOHO_PRODUCTS.map((product) => ({
+    id: product.id,
+    cardId: product.cardId,
+    name: product.name,
+    description: product.description,
+    category: product.category,
+    initials: product.initials,
+    icon: product.icon,
+    availability: product.availability,
+    docsUrl: product.docsUrl,
+    note: product.note,
+    connected: false,
+    apiDomain: null,
+    organizationId: null,
+  }));
+}
 
 export function useZohoConnection() {
   const [checking, setChecking] = useState(true);
-  const [connected, setConnected] = useState(false);
-  const [apiDomain, setApiDomain] = useState<string | null>(null);
+  const [products, setProducts] = useState<ZohoCatalogProduct[]>(fallbackCatalog);
   const [banner, setBanner] = useState<string | null>(null);
   const [bannerTone, setBannerTone] = useState<'success' | 'error'>('success');
   const [showReconnect, setShowReconnect] = useState(false);
+  const [reconnectProduct, setReconnectProduct] = useState<string | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
-  const [leads, setLeads] = useState<ZohoLead[] | null>(null);
+  const [previewTitle, setPreviewTitle] = useState('Zoho');
+  const [previewProductId, setPreviewProductId] = useState<string | null>(null);
+  const [sections, setSections] = useState<ZohoPreviewSection[]>([]);
+  const [organizations, setOrganizations] = useState<ZohoOrganization[]>([]);
+  const [needsOrganization, setNeedsOrganization] = useState(false);
+  const [apiDomain, setApiDomain] = useState<string | null>(null);
   const [leadsLoading, setLeadsLoading] = useState(false);
   const [leadsError, setLeadsError] = useState<string | null>(null);
-  const connectedRef = useRef(false);
 
-  useEffect(() => {
-    connectedRef.current = connected;
-  }, [connected]);
+  const load = useCallback(async () => {
+    const catalog = await fetchZohoCatalog();
+    setProducts(catalog);
+    setChecking(false);
+    return catalog;
+  }, []);
 
   useEffect(() => {
     const returned = consumeZohoReturn();
-
     let cancelled = false;
-    void fetchZohoStatus()
-      .then((status) => {
-        if (cancelled) return;
-        setChecking(false);
-        setConnected(status.connected);
-        setApiDomain(status.apiDomain);
-        if (returned.type === 'connected' && status.connected) {
-          setBanner('Zoho CRM is connected.');
+    void load()
+      .then((catalog) => {
+        if (cancelled || returned.type === 'none') return;
+        const product = returned.type === 'connected'
+          ? catalog.find((item) => item.id === returned.product)
+          : null;
+        if (returned.type === 'connected' && product?.connected) {
+          setBanner(`${product.name} is connected.`);
           setBannerTone('success');
           setShowReconnect(false);
         } else if (returned.type === 'connected') {
           setBanner('Zoho did not confirm the connection. It was not marked connected.');
           setBannerTone('error');
           setShowReconnect(true);
-        } else if (returned.type === 'error' && returned.reason === 'access_denied' && status.connected) {
-          setBanner('Zoho authorization was cancelled. The existing connection was left in place.');
-          setBannerTone('error');
-          setShowReconnect(false);
+          setReconnectProduct(returned.product);
         } else if (returned.type === 'error') {
           setBanner(zohoReturnMessage(returned.reason));
           setBannerTone('error');
-          setShowReconnect(true);
+          setShowReconnect(returned.reason !== 'access_denied');
         }
       })
       .catch(() => {
         if (cancelled) return;
         setChecking(false);
-        setConnected(false);
         if (returned.type === 'none') return;
         setBanner('The Zoho server did not respond, so the account was not marked connected.');
         setBannerTone('error');
         setShowReconnect(true);
       });
-
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [load]);
 
   useEffect(() => {
     const refreshOnFocus = () => {
-      void fetchZohoStatus()
-        .then((status) => {
-          setChecking(false);
-          setApiDomain(status.apiDomain);
-          if (status.connected && !connectedRef.current) {
-            setBanner('Zoho CRM is connected.');
-            setBannerTone('success');
-            setShowReconnect(false);
-          }
-          setConnected(status.connected);
-        })
-        .catch(() => undefined);
+      void load().catch(() => undefined);
     };
-
     window.addEventListener('focus', refreshOnFocus);
     return () => window.removeEventListener('focus', refreshOnFocus);
-  }, []);
+  }, [load]);
 
-  const preview = useCallback(async () => {
+  const preview = useCallback(async (productId: string, name: string) => {
     setPreviewOpen(true);
+    setPreviewTitle(name);
+    setPreviewProductId(productId);
     setLeadsLoading(true);
     setLeadsError(null);
+    setSections([]);
+    setOrganizations([]);
+    setNeedsOrganization(false);
     try {
-      const result = await fetchZohoLeads();
-      setLeads(result.leads);
-      if (result.apiDomain) setApiDomain(result.apiDomain);
+      const result = await fetchZohoPreview(productId);
+      setSections(result.sections);
+      setOrganizations(result.organizations);
+      setNeedsOrganization(result.needsOrganization);
+      setApiDomain(result.apiDomain);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Zoho could not complete the request.';
       setLeadsError(message);
-      if (error instanceof ZohoClientError && error.code === 'reconnect_required') {
-        setConnected(false);
+      if (error instanceof ZohoClientError && (error.code === 'reconnect_required' || error.code === 'missing_scope')) {
         setShowReconnect(true);
-      }
-      if (error instanceof ZohoClientError && error.code === 'missing_scope') {
-        setShowReconnect(true);
+        setReconnectProduct(productId);
+        if (error.code === 'reconnect_required') {
+          setProducts((current) => current.map((item) => (
+            item.id === productId ? { ...item, connected: false } : item
+          )));
+        }
       }
     } finally {
       setLeadsLoading(false);
     }
   }, []);
 
-  const disconnect = useCallback(async () => {
-    const result = await disconnectZoho();
-    setConnected(false);
-    setApiDomain(null);
+  const chooseOrganization = useCallback(async (organizationId: string) => {
+    if (!previewProductId) return;
+    setLeadsLoading(true);
+    setLeadsError(null);
+    try {
+      await selectZohoOrganization(previewProductId, organizationId);
+      const result = await fetchZohoPreview(previewProductId);
+      setSections(result.sections);
+      setOrganizations(result.organizations);
+      setNeedsOrganization(result.needsOrganization);
+      setApiDomain(result.apiDomain);
+    } catch (error) {
+      setLeadsError(error instanceof Error ? error.message : 'Zoho could not complete the request.');
+    } finally {
+      setLeadsLoading(false);
+    }
+  }, [previewProductId]);
+
+  const disconnect = useCallback(async (productId: string) => {
+    const product = products.find((item) => item.id === productId);
+    const result = await disconnectZoho(productId);
+    setProducts((current) => current.map((item) => (
+      item.id === productId ? { ...item, connected: false, organizationId: null } : item
+    )));
     setPreviewOpen(false);
-    setLeads(null);
     setShowReconnect(false);
     setBannerTone('success');
+    const name = product?.name ?? 'Zoho';
     setBanner(
       result.revoked
-        ? 'Zoho CRM was disconnected.'
-        : 'Zoho CRM was disconnected in Effort Multiplier. Zoho did not confirm token revocation. Remove the app in your Zoho account if it still appears there.',
+        ? `${name} was disconnected.`
+        : `${name} was disconnected in Effort Multiplier. Zoho did not confirm token revocation. Remove the app in your Zoho account if it still appears there.`,
     );
-  }, []);
+  }, [products]);
 
   return {
     checking,
-    connected,
-    apiDomain,
+    products,
     banner,
     bannerTone,
     showReconnect,
+    reconnectProduct,
     previewOpen,
-    leads,
+    previewTitle,
+    previewProductId,
+    sections,
+    organizations,
+    needsOrganization,
+    apiDomain,
     leadsLoading,
     leadsError,
     preview,
+    chooseOrganization,
     disconnect,
     closePreview: () => setPreviewOpen(false),
   };

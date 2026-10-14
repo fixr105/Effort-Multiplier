@@ -62,6 +62,33 @@ export function assertApiOrigin(value: string): string {
   return assertOrigin(value, API_ORIGINS, 'invalid_api_domain');
 }
 
+const DESK_ORIGINS: Record<string, string> = {
+  'https://www.zohoapis.com': 'https://desk.zoho.com',
+  'https://www.zohoapis.eu': 'https://desk.zoho.eu',
+  'https://www.zohoapis.in': 'https://desk.zoho.in',
+  'https://www.zohoapis.com.au': 'https://desk.zoho.com.au',
+  'https://www.zohoapis.jp': 'https://desk.zoho.jp',
+  'https://www.zohoapis.sa': 'https://desk.zoho.sa',
+  'https://www.zohoapis.ca': 'https://desk.zohocloud.ca',
+};
+
+const PEOPLE_ORIGINS: Record<string, string> = {
+  'https://www.zohoapis.com': 'https://people.zoho.com',
+  'https://www.zohoapis.eu': 'https://people.zoho.eu',
+  'https://www.zohoapis.in': 'https://people.zoho.in',
+  'https://www.zohoapis.com.au': 'https://people.zoho.com.au',
+  'https://www.zohoapis.jp': 'https://people.zoho.jp',
+  'https://www.zohoapis.sa': 'https://people.zoho.sa',
+  'https://www.zohoapis.ca': 'https://people.zohocloud.ca',
+};
+
+export function serviceOrigin(apiOrigin: string, service: 'desk' | 'people'): string {
+  const origin = assertApiOrigin(apiOrigin);
+  const mapped = service === 'desk' ? DESK_ORIGINS[origin] : PEOPLE_ORIGINS[origin];
+  if (!mapped) throw new DomainError('invalid_api_domain');
+  return mapped;
+}
+
 function assertOrigin(
   value: string,
   allowlist: Set<string>,

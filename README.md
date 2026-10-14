@@ -1,6 +1,8 @@
-# Zoho CRM local setup
+# Zoho integrations
 
-Zoho CRM is the only live integration. Every other card still uses the existing demo connection, which is stored only as a boolean in this browser.
+Zoho CRM, Books, Inventory, People, and Desk can connect separately. Each product keeps its own tokens. The other Zoho cards are listed as planned and do not start OAuth. Non-Zoho cards still use the demo connection stored only in this browser.
+
+There are no Effort Multiplier accounts yet. A signed browser session keeps one founder's tokens separate from another browser. That session is not production multi-tenant identity. The token store keeps a nullable `user_id` for a later authenticated account. The browser cannot set that id.
 
 The Zoho flow is a server-side OAuth 2.0 authorization-code grant for a multi-user Zoho web application. Each founder authorizes their own Zoho organization. This build does not have Effort Multiplier accounts. A signed browser session keeps one founder's tokens separate from another browser on the same machine. That session is not production multi-tenant identity. The token store keeps a nullable `user_id` so a later authenticated Effort Multiplier user can own the connection. The browser cannot set that id.
 
@@ -8,15 +10,31 @@ The Zoho flow is a server-side OAuth 2.0 authorization-code grant for a multi-us
 
 In the [Zoho API Console](https://api-console.zoho.com/), use a **Server-based** client, not a Self Client.
 
-Register this redirect URI exactly:
+Register the callback that matches the environment exactly.
+
+Local:
 
 `http://localhost:5173/api/integrations/zoho/callback`
+
+Production:
+
+`https://em.multiplierclub.in/api/integrations/zoho/callback`
+
+Zoho allows one redirect URI on a Server-based client. Use the localhost URI while testing locally, and switch the console entry to the production URI before using the live domain. Do not put the production URI in the local `.env` unless that exact URI is registered.
 
 If the console has a different URI, change the console entry or `ZOHO_REDIRECT_URI` so they match. The server does not rewrite the callback URL. Local development refuses to start when `ZOHO_REDIRECT_URI` is anything else.
 
 Enable Multi-DC on the client if founders sign in outside the data center where the client was created. The app accepts the `accounts-server` and `api_domain` Zoho returns only when they are official Zoho hosts, then calls that region. It does not assume the US data center.
 
-The requested scope is `ZohoCRM.modules.leads.READ` with `access_type=offline`.
+Each available product requests only its own read scopes, with `access_type=offline`. Connecting CRM does not connect Books or any other product.
+
+On Vercel, set `DATABASE_URL` to a Postgres database. The serverless filesystem is not used for tokens. Local development uses `data/zoho.sqlite` when `DATABASE_URL` is empty.
+
+Check local configuration without printing secret values:
+
+```bash
+npm run check:env
+```
 
 ## Local environment
 
@@ -37,7 +55,7 @@ The app is served at `http://localhost:5173`. Vite proxies `/api` to the Node AP
 ## What to click
 
 1. Open `http://localhost:5173`.
-2. Connect on **Zoho CRM**. The browser should leave the app for Zoho's login and consent screen.
+2. Open **Zoho products**. Connect on a card marked **Signs in with Zoho**. Planned cards do not leave the app. The sign-in opens in a new tab.
 3. After consent, the card shows **Connected** only when `/api/integrations/zoho/status` reports a stored connection.
 4. **Preview data** loads up to five leads from `{api_domain}/crm/v8/Leads`. An empty list means Zoho returned no leads.
 5. Disconnect deletes the stored tokens and asks Zoho to revoke the refresh token.

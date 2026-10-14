@@ -52,9 +52,10 @@ export function buildAuthorizationUrl(input: {
   clientId: string;
   redirectUri: string;
   state: string;
+  scope?: string;
 }): string {
   const url = new URL('https://accounts.zoho.com/oauth/v2/auth');
-  url.searchParams.set('scope', ZOHO_SCOPE);
+  url.searchParams.set('scope', input.scope ?? ZOHO_SCOPE);
   url.searchParams.set('client_id', input.clientId);
   url.searchParams.set('response_type', 'code');
   url.searchParams.set('access_type', 'offline');

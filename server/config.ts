@@ -8,6 +8,9 @@ import { timingSafeEqual } from 'node:crypto';
 export const LOCAL_REDIRECT_URI =
   'http://localhost:5173/api/integrations/zoho/callback';
 
+export const PRODUCTION_REDIRECT_URI =
+  'https://em.multiplierclub.in/api/integrations/zoho/callback';
+
 export const API_PORT = 3001;
 
 const HEX_KEY = /^[0-9a-fA-F]{64}$/;
@@ -20,6 +23,7 @@ export interface AppConfig {
   tokenEncryptionKey: Buffer;
   production: boolean;
   databasePath: string;
+  databaseUrl: string | null;
   port: number;
 }
 
@@ -53,6 +57,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     tokenEncryptionKey,
     production,
     databasePath: env.ZOHO_DB_PATH?.trim() || 'data/zoho.sqlite',
+    databaseUrl: env.DATABASE_URL?.trim() || null,
     port: API_PORT,
   };
 }
@@ -93,9 +98,9 @@ function assertRedirectUri(value: string, production: boolean): void {
   }
 
   if (production) {
-    if (url.protocol !== 'https:') {
+    if (value !== PRODUCTION_REDIRECT_URI) {
       throw new Error(
-        'ZOHO_REDIRECT_URI must use https in production and must match the Zoho API Console exactly.',
+        `Production requires ZOHO_REDIRECT_URI to be ${PRODUCTION_REDIRECT_URI}. Register that exact URI in the Zoho API Console. The server will not substitute a different callback URL.`,
       );
     }
     return;

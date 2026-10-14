@@ -31,7 +31,6 @@ export const CATEGORY_LABELS: Record<string, string> = {
 
 export const INTEGRATIONS: Integration[] = [
   // CRM & Sales
-  { id: 'zoho-crm', name: 'Zoho CRM', description: 'Manage leads, contacts and sales pipelines.', category: 'crm', color: '#e42527', initials: 'ZC', icon: 'Users' },
   { id: 'salesforce', name: 'Salesforce', description: 'Manage customer relationships and sales.', category: 'crm', color: '#00a1e0', initials: 'SF', icon: 'Cloud' },
   { id: 'hubspot', name: 'HubSpot', description: 'Manage leads, marketing and customer data.', category: 'crm', color: '#ff7a59', initials: 'HS', icon: 'Target' },
   { id: 'pipedrive', name: 'Pipedrive', description: 'Track deals and sales activities.', category: 'crm', color: '#1a1a1a', initials: 'PD', icon: 'TrendingUp' },
@@ -59,7 +58,6 @@ export const INTEGRATIONS: Integration[] = [
   { id: 'docusign', name: 'DocuSign', description: 'Electronic signatures and agreements.', category: 'files', color: '#f4d03f', initials: 'DS', icon: 'PenTool' },
 
   // Accounting & Finance
-  { id: 'zoho-books', name: 'Zoho Books', description: 'Invoices, expenses and receivables.', category: 'accounting', color: '#e42527', initials: 'ZB', icon: 'BookOpen' },
   { id: 'quickbooks', name: 'QuickBooks', description: 'Accounting and financial records.', category: 'accounting', color: '#2ca01c', initials: 'QB', icon: 'Calculator' },
   { id: 'tally', name: 'Tally', description: 'Accounting and business financial data.', category: 'accounting', color: '#1d6e7e', initials: 'TY', icon: 'Landmark' },
 
@@ -69,15 +67,12 @@ export const INTEGRATIONS: Integration[] = [
   { id: 'stripe', name: 'Stripe', description: 'Payments and billing.', category: 'payments', color: '#635bff', initials: 'ST', icon: 'CreditCard' },
 
   // HR & Payroll
-  { id: 'zoho-people', name: 'Zoho People', description: 'Employee and HR information.', category: 'hr', color: '#e42527', initials: 'ZP', icon: 'Users' },
   { id: 'greythr', name: 'greytHR', description: 'Payroll and attendance.', category: 'hr', color: '#f47b20', initials: 'GT', icon: 'BadgeCheck' },
   { id: 'keka', name: 'Keka', description: 'HR and workforce management.', category: 'hr', color: '#ff6b6b', initials: 'KK', icon: 'Briefcase' },
 
   // Customer Support
   { id: 'zendesk', name: 'Zendesk', description: 'Customer support tickets.', category: 'support', color: '#03363d', initials: 'ZD', icon: 'LifeBuoy' },
   { id: 'freshdesk', name: 'Freshdesk', description: 'Customer service operations.', category: 'support', color: '#fc6d26', initials: 'FD', icon: 'Headset' },
-  { id: 'zoho-desk', name: 'Zoho Desk', description: 'Support tickets and customer queries.', category: 'support', color: '#e42527', initials: 'ZK', icon: 'Ticket' },
-
   // Marketing
   { id: 'mailchimp', name: 'Mailchimp', description: 'Email campaigns and audience information.', category: 'marketing', color: '#ffe01b', initials: 'MC', icon: 'Send' },
   { id: 'meta-ads', name: 'Meta Ads', description: 'Advertising campaign performance.', category: 'marketing', color: '#0467df', initials: 'MA', icon: 'BarChart3' },

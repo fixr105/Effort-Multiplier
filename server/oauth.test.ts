@@ -5,7 +5,7 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
-import { LOCAL_REDIRECT_URI, loadConfig } from './config.ts';
+import { LOCAL_REDIRECT_URI, PRODUCTION_REDIRECT_URI, loadConfig } from './config.ts';
 import { decryptString, encryptString } from './crypto.ts';
 import { assertAccountsOrigin, assertApiOrigin, DomainError } from './domains.ts';
 import { createZohoServer } from './app.ts';
@@ -36,6 +36,7 @@ function testConfig(overrides?: Partial<AppConfig>): AppConfig {
     tokenEncryptionKey: Buffer.alloc(32, 2),
     production: false,
     databasePath: ':memory:',
+    databaseUrl: null,
     port: 3001,
     ...overrides,
   };
@@ -61,7 +62,7 @@ interface HttpResult {
 function call(
   base: string,
   path: string,
-  options?: { method?: string; cookie?: string },
+  options?: { method?: string; cookie?: string; csrf?: boolean },
 ): Promise<HttpResult> {
   const url = new URL(path, base);
   return new Promise((resolve, reject) => {
@@ -69,7 +70,10 @@ function call(
       url,
       {
         method: options?.method ?? 'GET',
-        headers: options?.cookie ? { cookie: options.cookie } : undefined,
+        headers: {
+          ...(options?.csrf === false ? {} : { 'x-em-request': '1' }),
+          ...(options?.cookie ? { cookie: options.cookie } : {}),
+        },
       },
       (res) => {
         const chunks: Buffer[] = [];
@@ -165,14 +169,11 @@ describe('configuration', () => {
     const config = loadConfig(
       env({
         NODE_ENV: 'production',
-        ZOHO_REDIRECT_URI: 'https://app.example.com/api/integrations/zoho/callback',
+        ZOHO_REDIRECT_URI: PRODUCTION_REDIRECT_URI,
       }),
     );
     assert.equal(config.production, true);
-    assert.equal(
-      config.redirectUri,
-      'https://app.example.com/api/integrations/zoho/callback',
-    );
+    assert.equal(config.redirectUri, PRODUCTION_REDIRECT_URI);
   });
 });
 
@@ -343,8 +344,10 @@ describe('Zoho OAuth routes', () => {
         assert.equal(status.status, 200);
         assert.deepEqual(JSON.parse(status.body), {
           connected: true,
+          product: 'crm',
           apiDomain: 'https://www.zohoapis.in',
           scope: 'ZohoCRM.modules.leads.READ',
+          organizationId: null,
           identity: 'local-browser-session',
         });
         assertNoSecrets(status.body);
@@ -523,6 +526,34 @@ describe('Zoho OAuth routes', () => {
         },
       },
     );
+  });
+
+  it('keeps Zoho products independent and refuses a planned product', async () => {
+    await withServer(async ({ base }) => {
+      const planned = await call(base, '/api/integrations/zoho/bigin/connect');
+      assert.equal(planned.status, 409);
+      const started = await call(base, '/api/integrations/zoho/books/connect');
+      const location = new URL(started.headers.location ?? '');
+      assert.equal(
+        location.searchParams.get('scope'),
+        'ZohoBooks.contacts.READ,ZohoBooks.invoices.READ,ZohoBooks.settings.READ',
+      );
+      const state = location.searchParams.get('state') ?? '';
+      const callback = await call(base, callbackPath(state, 'https://accounts.zoho.in'), {
+        cookie: cookiePair(started.headers),
+      });
+      const session = cookiePair(callback.headers);
+      const books = await call(base, '/api/integrations/books/status', { cookie: session });
+      const crm = await call(base, '/api/integrations/crm/status', { cookie: session });
+      assert.equal(JSON.parse(books.body).connected, true);
+      assert.equal(JSON.parse(crm.body).connected, false);
+      const blocked = await call(base, '/api/integrations/zoho/books/disconnect', {
+        method: 'POST',
+        cookie: session,
+        csrf: false,
+      });
+      assert.equal(blocked.status, 403);
+    }, { fetchImpl: successfulTokenFetch });
   });
 });
 

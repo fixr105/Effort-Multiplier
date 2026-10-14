@@ -649,6 +649,7 @@ function buildAuthorizationUrl(input) {
   url.searchParams.set("client_id", input.clientId);
   url.searchParams.set("response_type", "code");
   url.searchParams.set("access_type", "offline");
+  url.searchParams.set("prompt", "consent");
   url.searchParams.set("redirect_uri", input.redirectUri);
   url.searchParams.set("state", input.state);
   return url.toString();
@@ -1207,7 +1208,7 @@ var ZOHO_PRODUCTS = [
     initials: "ZD",
     icon: "Ticket",
     availability: "available",
-    scopes: ["Desk.tickets.READ", "Desk.basic.READ"],
+    scopes: ["Desk.tickets.READ", "Desk.basic.READ", "Desk.organization.READ"],
     docsUrl: "https://desk.zoho.com/DeskAPIDocument",
     note: "Read-only tickets. Choose a Desk organization when Zoho returns more than one."
   },

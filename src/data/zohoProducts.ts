@@ -116,7 +116,7 @@ export const ZOHO_PRODUCTS: readonly ZohoProductDefinition[] = [
     initials: 'ZD',
     icon: 'Ticket',
     availability: 'available',
-    scopes: ['Desk.tickets.READ', 'Desk.basic.READ'],
+    scopes: ['Desk.tickets.READ', 'Desk.basic.READ', 'Desk.organization.READ'],
     docsUrl: 'https://desk.zoho.com/DeskAPIDocument',
     note: 'Read-only tickets. Choose a Desk organization when Zoho returns more than one.',
   },

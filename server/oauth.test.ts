@@ -239,6 +239,7 @@ describe('Zoho OAuth routes', () => {
       assert.equal(location.searchParams.get('scope'), 'ZohoCRM.modules.leads.READ');
       assert.equal(location.searchParams.get('response_type'), 'code');
       assert.equal(location.searchParams.get('access_type'), 'offline');
+      assert.equal(location.searchParams.get('prompt'), 'consent');
       assert.equal(location.searchParams.get('redirect_uri'), LOCAL_REDIRECT_URI);
       assert.equal(location.searchParams.get('client_id'), 'test-client-id');
       assert.equal(location.searchParams.has('client_secret'), false);
@@ -567,6 +568,11 @@ describe('Zoho OAuth routes', () => {
       assert.equal(
         location.searchParams.get('scope'),
         'ZohoProjects.portals.READ,ZohoProjects.projects.READ,ZohoProjects.tasks.READ',
+      );
+      const desk = await call(base, '/api/integrations/zoho/desk/connect');
+      assert.equal(
+        new URL(desk.headers.location ?? '').searchParams.get('scope'),
+        'Desk.tickets.READ,Desk.basic.READ,Desk.organization.READ',
       );
       const creator = await call(base, '/api/integrations/zoho/creator/connect');
       assert.equal(creator.status, 409);

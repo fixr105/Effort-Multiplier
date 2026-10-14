@@ -203,10 +203,10 @@ export function openTokenStore(filename: string): TokenStore {
       insertSession.run(session.id, session.createdAt, session.expiresAt, session.userId);
     },
     async getSession(id) {
-      return mapSession(selectSession.get(id) as SessionRow | undefined);
+      return mapSession(selectSession.get(id) as unknown as SessionRow | undefined);
     },
     async rotateSession(sessionId, now, next) {
-      const current = selectSession.get(sessionId) as SessionRow | undefined;
+      const current = selectSession.get(sessionId) as unknown as SessionRow | undefined;
       if (!current || current.expires_at <= now) return null;
       transaction(() => {
         insertSession.run(next.id, next.createdAt, next.expiresAt, next.userId);
@@ -251,12 +251,12 @@ export function openTokenStore(filename: string): TokenStore {
     async getConnection(owner) {
       if (owner.userId) {
         const byUser = mapConnection(
-          selectConnectionByUser.get(owner.userId, owner.product) as ConnectionRow | undefined,
+          selectConnectionByUser.get(owner.userId, owner.product) as unknown as ConnectionRow | undefined,
         );
         if (byUser) return byUser;
       }
       return mapConnection(
-        selectConnectionBySession.get(owner.sessionId, owner.product) as ConnectionRow | undefined,
+        selectConnectionBySession.get(owner.sessionId, owner.product) as unknown as ConnectionRow | undefined,
       );
     },
     async listConnections(owner) {

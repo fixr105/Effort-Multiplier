@@ -11,7 +11,8 @@ export async function openConfiguredStore(config: AppConfig): Promise<TokenStore
     return openPostgresStore(config.databaseUrl);
   }
   if (process.env.VERCEL === '1') return unavailableStore();
-  const { openTokenStore } = await import('./store.ts');
+  const sqliteEntry = './store.ts';
+  const { openTokenStore } = await import(sqliteEntry);
   return openTokenStore(config.databasePath);
 }
 

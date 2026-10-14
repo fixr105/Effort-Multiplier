@@ -7,7 +7,7 @@
     "dev": "node scripts/dev.mjs",
     "dev:client": "vite --host 0.0.0.0 --port 5173 --strictPort",
     "dev:server": "node --disable-warning=ExperimentalWarning --env-file=.env server/index.ts",
-    "build": "vite build",
+    "build": "node scripts/bundle-api.mjs && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "node --disable-warning=ExperimentalWarning --test server/*.test.ts",

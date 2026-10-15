@@ -270,7 +270,9 @@ export function openTokenStore(filename: string): TokenStore {
   );
   const upsertGoogleConnection = db.prepare(
     `INSERT INTO google_connections (id, grant_id, session_id, product, scopes, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)
+     SELECT ?, id, session_id, ?, ?, ?, ?
+     FROM google_grants
+     WHERE id = ? AND session_id = ?
      ON CONFLICT(session_id, product) DO UPDATE SET
        grant_id = excluded.grant_id,
        scopes = excluded.scopes,
@@ -429,15 +431,18 @@ export function openTokenStore(filename: string): TokenStore {
       return rows.map((row) => mapGoogleConnection(row)).filter((row): row is GoogleConnectionRecord => row !== null);
     },
     async upsertGoogleConnection(input) {
-      upsertGoogleConnection.run(
+      const result = upsertGoogleConnection.run(
         input.id,
-        input.grantId,
-        input.sessionId,
         input.product,
         input.scopes,
         input.createdAt,
         input.updatedAt,
+        input.grantId,
+        input.sessionId,
       );
+      if (Number(result.changes) !== 1) {
+        throw new Error('google_grant_session_mismatch');
+      }
     },
     async deleteGoogleConnection(sessionId, product) {
       const result = deleteGoogleConnection.run(sessionId, product);

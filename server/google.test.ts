@@ -3,6 +3,8 @@ import { request as httpRequest, type IncomingHttpHeaders } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { describe, it } from 'node:test';
 import { createZohoServer, type ServerDeps } from './app.ts';
+import { encryptString } from './crypto.ts';
+import { createSessionId } from './session.ts';
 import { verifySessionToken } from './session.ts';
 import { decryptString } from './crypto.ts';
 import { LOCAL_GOOGLE_REDIRECT_URI, PRODUCTION_GOOGLE_REDIRECT_URI, loadGoogleConfig } from './google-config.ts';
@@ -146,6 +148,59 @@ function sessionIdFromCookie(cookie: string): string {
   assert.ok(payload);
   return payload.sid;
 }
+
+describe('Google persistence ownership', () => {
+  it('refuses to attach a grant that belongs to another session', async () => {
+    const store = openTokenStore(':memory:');
+    const now = Date.now();
+    const owner = { id: createSessionId(), createdAt: now, expiresAt: now + 60_000, userId: null };
+    const other = { id: createSessionId(), createdAt: now, expiresAt: now + 60_000, userId: null };
+    await store.createSession(owner);
+    await store.createSession(other);
+    const grantId = '11111111-1111-4111-8111-111111111111';
+    await store.insertGoogleGrant({
+      id: grantId,
+      sessionId: owner.id,
+      userId: null,
+      googleSub: '123456789',
+      email: 'person@example.com',
+      accessToken: encryptString(ACCESS_TOKEN, Buffer.alloc(32, 2), grantId),
+      refreshToken: encryptString(REFRESH_TOKEN, Buffer.alloc(32, 2), grantId),
+      accessTokenExpiresAt: now + 3_600_000,
+      grantedScopes: 'https://www.googleapis.com/auth/gmail.metadata',
+      refreshedAt: now,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await assert.rejects(
+      () => store.upsertGoogleConnection({
+        id: '22222222-2222-4222-8222-222222222222',
+        grantId,
+        sessionId: other.id,
+        product: 'gmail',
+        scopes: 'https://www.googleapis.com/auth/gmail.metadata',
+        createdAt: now,
+        updatedAt: now,
+      }),
+      /google_grant_session_mismatch/,
+    );
+    assert.equal((await store.listGoogleConnections(other.id)).length, 0);
+    await store.upsertGoogleConnection({
+      id: '33333333-3333-4333-8333-333333333333',
+      grantId,
+      sessionId: owner.id,
+      product: 'gmail',
+      scopes: 'https://www.googleapis.com/auth/gmail.metadata',
+      createdAt: now,
+      updatedAt: now,
+    });
+    const visible = await store.listGoogleConnections(owner.id);
+    assert.equal(visible.length, 1);
+    assert.equal(visible[0]?.grantId, grantId);
+    assert.equal((await store.listGoogleConnections(other.id)).length, 0);
+    store.close();
+  });
+});
 
 describe('Google availability', () => {
   it('hides every product until an administrator confirms API enablement', async () => {

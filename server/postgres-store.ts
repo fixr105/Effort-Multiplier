@@ -318,15 +318,20 @@ export async function openPostgresStore(databaseUrl: string): Promise<TokenStore
         .filter((row): row is GoogleConnectionRecord => row !== null);
     },
     async upsertGoogleConnection(input) {
-      await pool.query(
+      const result = await pool.query(
         `INSERT INTO google_connections (id, grant_id, session_id, product, scopes, created_at, updated_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7)
+         SELECT $1, id, session_id, $2, $3, $4, $5
+         FROM google_grants
+         WHERE id = $6 AND session_id = $7
          ON CONFLICT (session_id, product) DO UPDATE SET
            grant_id = EXCLUDED.grant_id,
            scopes = EXCLUDED.scopes,
            updated_at = EXCLUDED.updated_at`,
-        [input.id, input.grantId, input.sessionId, input.product, input.scopes, input.createdAt, input.updatedAt],
+        [input.id, input.product, input.scopes, input.createdAt, input.updatedAt, input.grantId, input.sessionId],
       );
+      if ((result.rowCount ?? 0) !== 1) {
+        throw new Error('google_grant_session_mismatch');
+      }
     },
     async deleteGoogleConnection(sessionId, product) {
       const result = await pool.query(

@@ -3,7 +3,7 @@ import type { CategoryId } from '../types.ts';
 /**
  * Server and browser share this registry.
  * Scopes are requested only for products whose APIs this app actually calls.
- * Planned products stay visible and cannot start OAuth.
+ * Planned products stay in this registry and stay off the catalog until a connector exists.
  */
 export type ZohoAvailability = 'available' | 'planned' | 'setup_required';
 

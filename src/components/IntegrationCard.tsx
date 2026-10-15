@@ -32,7 +32,7 @@ export function IntegrationCard({
   status,
   statusNote,
 }: IntegrationCardProps) {
-  const detailText = detail ?? (connected ? 'Active demo connection' : 'Ready to connect');
+  const detailText = detail ?? (connected ? 'Connected' : 'Ready to connect');
   const badge = status ?? (connected ? 'connected' : 'not_connected');
   const badgeLabel = {
     connected: 'Connected',

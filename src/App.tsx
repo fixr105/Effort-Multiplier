@@ -1,6 +1,5 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import type { Integration, ConnectionState } from '@/types';
-import { INTEGRATIONS } from '@/data/integrations';
 import { Header } from '@/components/Header';
 import { IntroSection } from '@/components/IntroSection';
 import { ConnectedToolsSummary } from '@/components/ConnectedToolsSummary';
@@ -71,13 +70,10 @@ function App() {
   const [hydrated, setHydrated] = useState(false);
   const [search, setSearch] = useState('');
   const [activeFilter, setActiveFilter] = useState('all');
-  const [statusFilter, setStatusFilter] = useState<
-    'all' | 'connected' | 'available' | 'coming_soon' | 'setup_required'
-  >('all');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'connected' | 'available'>('all');
   const [connectTarget, setConnectTarget] = useState<Integration | null>(null);
   const [disconnectTarget, setDisconnectTarget] = useState<Integration | null>(null);
   const [loading, setLoading] = useState(true);
-  const [library, setLibrary] = useState<'all' | 'zoho'>('zoho');
   const zoho = useZohoConnection();
   const google = useGoogleConnection();
   const disconnectZohoConnection = zoho.disconnect;
@@ -146,10 +142,8 @@ function App() {
   );
 
   const visibleIntegrations = useMemo(
-    () => (library === 'zoho'
-      ? [...zohoIntegrations, ...googleIntegrations]
-      : [...zohoIntegrations, ...googleIntegrations, ...INTEGRATIONS]),
-    [library, zohoIntegrations, googleIntegrations],
+    () => [...zohoIntegrations, ...googleIntegrations],
+    [zohoIntegrations, googleIntegrations],
   );
 
   const displayConnections = useMemo(() => {
@@ -177,9 +171,7 @@ function App() {
         (statusFilter === 'available' && (
           (product?.availability === 'available' && !product.connected)
           || (googleProduct?.connectable === true && !googleProduct.connected)
-        )) ||
-        (statusFilter === 'coming_soon' && product?.availability === 'planned' && !googleProduct) ||
-        (statusFilter === 'setup_required' && product?.availability === 'setup_required' && !googleProduct);
+        ));
       const matchesSearch =
         search === '' ||
         integration.name.toLowerCase().includes(search.toLowerCase()) ||
@@ -189,7 +181,7 @@ function App() {
   }, [visibleIntegrations, search, activeFilter, statusFilter, zoho.products, google.products, displayConnections]);
 
   const connectedIntegrations = useMemo(
-    () => [...zohoIntegrations, ...googleIntegrations, ...INTEGRATIONS].filter((integration) => displayConnections[integration.id]),
+    () => [...zohoIntegrations, ...googleIntegrations].filter((integration) => displayConnections[integration.id]),
     [displayConnections, zohoIntegrations, googleIntegrations],
   );
 
@@ -201,7 +193,7 @@ function App() {
 
       <main className="max-w-6xl mx-auto px-5 sm:px-6 lg:px-8">
         <IntroSection
-          totalIntegrations={zohoIntegrations.length + googleIntegrations.length + INTEGRATIONS.length}
+          totalIntegrations={zohoIntegrations.length + googleIntegrations.length}
           connectedCount={connectedCount}
         />
 
@@ -215,32 +207,12 @@ function App() {
         <div className="flex flex-col gap-4 mb-6">
           <SearchBar value={search} onChange={setSearch} />
           <div className="chip-scroll overflow-x-auto sm:overflow-visible -mx-5 px-5 sm:mx-0 sm:px-0">
-            <div className="flex items-center gap-2 mb-3">
-              <button
-                onClick={() => setLibrary('zoho')}
-                className={`px-3.5 py-2 rounded-lg text-xs font-medium ${
-                  library === 'zoho' ? 'bg-gray-900 text-white' : 'bg-white text-gray-600 border border-gray-200'
-                }`}
-              >
-                Zoho products
-              </button>
-              <button
-                onClick={() => setLibrary('all')}
-                className={`px-3.5 py-2 rounded-lg text-xs font-medium ${
-                  library === 'all' ? 'bg-gray-900 text-white' : 'bg-white text-gray-600 border border-gray-200'
-                }`}
-              >
-                All tools
-              </button>
-            </div>
             <div className="flex flex-wrap gap-2 mb-3">
               {(
                 [
                   ['all', 'All'],
                   ['connected', 'Connected'],
                   ['available', 'Available'],
-                  ['coming_soon', 'Coming soon'],
-                  ['setup_required', 'Setup required'],
                 ] as const
               ).map(([id, label]) => (
                 <button
@@ -361,11 +333,7 @@ function App() {
               const status = product
                 ? product.connected
                   ? 'connected'
-                  : product.availability === 'available'
-                    ? 'not_connected'
-                    : product.availability === 'setup_required'
-                      ? 'setup_required'
-                      : 'coming_soon'
+                  : 'not_connected'
                 : googleProduct
                   ? googleProduct.connected ? 'connected' : 'not_connected'
                   : undefined;
@@ -396,7 +364,7 @@ function App() {
                   connectHref={
                     googleProduct && status === 'not_connected' && googleProduct.connectable
                       ? `/api/integrations/google/${googleProduct.id}/connect`
-                      : status === 'not_connected' && product
+                      : status === 'not_connected' && product?.availability === 'available'
                         ? `/api/integrations/zoho/${product.id}/connect`
                         : undefined
                   }
@@ -434,10 +402,6 @@ function App() {
       <footer className="border-t border-gray-100 py-6">
         <div className="max-w-6xl mx-auto px-5 sm:px-6 lg:px-8 flex items-center justify-between text-xs text-gray-400">
           <span>Effort Multiplier &middot; A 5x Club product</span>
-          <span className="flex items-center gap-1.5">
-            <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
-            Other integrations are demo connections
-          </span>
         </div>
       </footer>
     </div>

@@ -535,6 +535,10 @@ describe('Zoho OAuth routes', () => {
 
   it('keeps Zoho products independent and refuses a planned product', async () => {
     await withServer(async ({ base }) => {
+      const catalog = JSON.parse((await call(base, '/api/integrations')).body) as { products: { id: string }[] };
+      assert.deepEqual(catalog.products.map((product) => product.id), [
+        'crm', 'books', 'inventory', 'people', 'desk', 'calendar', 'projects', 'sign',
+      ]);
       const planned = await call(base, '/api/integrations/zoho/bigin/connect');
       assert.equal(planned.status, 409);
       const started = await call(base, '/api/integrations/zoho/books/connect');

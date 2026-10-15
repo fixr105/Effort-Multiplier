@@ -1,10 +1,10 @@
 # Integrations
 
-Google products stay hidden until `GOOGLE_CONFIRMED_PRODUCTS` lists ids whose Cloud APIs an administrator has enabled. The OAuth client variables alone do not make a product visible. Chat, Admin SDK, and Workspace Events stay hidden because their prerequisites are not configured. Disconnecting one Google product removes it locally. The Google refresh token is revoked only when no other product still uses that grant.
+Google products stay hidden until `GOOGLE_CONFIRMED_PRODUCTS` lists ids whose Cloud APIs an administrator has enabled. The confirmed ids are `gmail,calendar,drive,docs,sheets,slides,forms,tasks,people,meet,analytics,search-console,apps-script`. The OAuth client variables alone do not make a product visible. Chat, Admin SDK, and Workspace Events stay hidden because their prerequisites are not configured. Disconnecting one Google product removes it locally. The Google refresh token is revoked only when no other product still uses that grant.
 
 # Zoho integrations
 
-Zoho CRM, Books, Inventory, People, Desk, Projects, Calendar, and Sign can connect separately. Each product keeps its own tokens. The other Zoho cards are Coming soon or Setup required and do not start OAuth. Zoho Creator needs an app owner and link name before a connector can read records, and that step is not built. Non-Zoho cards still use the demo connection stored only in this browser.
+Zoho CRM, Books, Inventory, People, Desk, Projects, Calendar, and Sign can connect separately. Each product keeps its own tokens. The other Zoho products stay in the registry and are omitted from the catalog. Zoho Creator needs an app owner and link name before a connector can read records, and that step is not built. Demo cards, including Google Ads, are not shown.
 
 Before multiple founders share one deployment, Effort Multiplier needs real accounts. Until then, tokens stay encrypted and bound to the browser session that created them. A later account system can set the nullable `user_id`. The browser cannot set it. New Zoho scopes also have to be enabled on the existing Zoho API Console client or Zoho will refuse consent.
 

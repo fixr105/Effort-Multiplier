@@ -3117,9 +3117,10 @@ async function handleCatalog(req, res, deps) {
     {
       identity: IDENTITY,
       persistence: persistenceName(deps),
-      products: ZOHO_PRODUCTS.map((product) => {
+      products: ZOHO_PRODUCTS.flatMap((product) => {
         const connection = connected.get(product.id) ?? null;
-        return {
+        if (product.availability !== "available" && connection === null) return [];
+        return [{
           id: product.id,
           cardId: product.cardId,
           name: product.name,
@@ -3134,7 +3135,7 @@ async function handleCatalog(req, res, deps) {
           apiDomain: connection?.apiOrigin ?? null,
           organizationId: connection?.organizationId ?? null,
           scope: connection?.scope ?? null
-        };
+        }];
       })
     },
     active?.cookie

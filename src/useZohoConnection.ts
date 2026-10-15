@@ -14,7 +14,7 @@ import {
 } from '@/zohoApi';
 
 function fallbackCatalog(): ZohoCatalogProduct[] {
-  return ZOHO_PRODUCTS.map((product) => ({
+  return ZOHO_PRODUCTS.filter((product) => product.availability === 'available').map((product) => ({
     id: product.id,
     cardId: product.cardId,
     name: product.name,

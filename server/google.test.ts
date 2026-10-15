@@ -9,6 +9,7 @@ import { createSessionId } from './session.ts';
 import { verifySessionToken } from './session.ts';
 import { decryptString } from './crypto.ts';
 import { LOCAL_GOOGLE_REDIRECT_URI, PRODUCTION_GOOGLE_REDIRECT_URI, loadGoogleConfig } from './google-config.ts';
+import { GOOGLE_PRODUCTS } from './google-products.ts';
 import { createGoogleOAuth, type GoogleOAuth } from './google-oauth.ts';
 import { LOCAL_REDIRECT_URI } from './config.ts';
 import type { AppConfig } from './config.ts';
@@ -285,6 +286,36 @@ describe('Google availability', () => {
       assert.equal(zoho.status, 302);
       assert.match(zoho.headers.location ?? '', /ZohoCRM\.modules\.leads\.READ/);
     }, { googleConfig: readyGoogle('gmail,calendar,chat,admin,workspace-events'), googleOAuth: oauth });
+  });
+
+  it('offers a separate connect path for every confirmed connector and omits demos', async () => {
+    const ready = GOOGLE_PRODUCTS.filter((product) => product.availability === 'confirmable');
+    assert.deepEqual(ready.map((product) => product.id), [
+      'gmail', 'calendar', 'drive', 'docs', 'sheets', 'slides', 'forms', 'tasks', 'people', 'meet', 'analytics', 'search-console', 'apps-script',
+    ]);
+    await withServer(async ({ base }) => {
+      const catalog = JSON.parse((await call(base, '/api/integrations/google')).body) as {
+        products: { id: string; cardId: string; connectable: boolean; connected: boolean }[];
+      };
+      assert.deepEqual(catalog.products.map((product) => product.id), ready.map((product) => product.id));
+      assert.ok(catalog.products.every((product) => product.connectable && product.connected === false));
+      assert.equal(catalog.products.some((product) => product.id === 'google-ads' || product.cardId === 'google-ads'), false);
+      for (const product of ready) {
+        const started = await call(base, `/api/integrations/google/${product.id}/connect`);
+        assert.equal(started.status, 302);
+        const location = new URL(started.headers.location ?? '');
+        const scope = location.searchParams.get('scope') ?? '';
+        for (const item of product.scopes) assert.ok(scope.includes(item.scope), product.id);
+        assert.equal(location.searchParams.has('client_secret'), false);
+        assert.equal(location.searchParams.get('redirect_uri'), LOCAL_GOOGLE_REDIRECT_URI);
+      }
+      for (const id of ['chat', 'admin', 'workspace-events']) {
+        assert.equal((await call(base, `/api/integrations/google/${id}/connect`)).status, 409);
+      }
+    }, {
+      googleConfig: readyGoogle(ready.map((product) => product.id).concat(['chat', 'admin', 'workspace-events']).join(',')),
+      googleOAuth: fakeOAuth({ revoked: [] }),
+    });
   });
 });
 

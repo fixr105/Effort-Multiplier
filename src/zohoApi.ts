@@ -284,6 +284,7 @@ function toCatalogProduct(value: unknown): ZohoCatalogProduct | null {
   if (availability !== 'available' && availability !== 'planned' && availability !== 'setup_required') {
     return null;
   }
+  if (availability !== 'available' && value.connected !== true) return null;
   return {
     id: value.id,
     cardId: value.cardId,

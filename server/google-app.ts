@@ -505,7 +505,7 @@ const buckets = new Map<string, number[]>();
 
 function limited(req: IncomingMessage, deps: ServerDeps, name: string, max: number, windowMs: number): boolean {
   const now = clock(deps);
-  const key = `${name}:${req.socket.remoteAddress ?? 'local'}`;
+  const key = `${name}:${req.socket?.remoteAddress ?? 'local'}`;
   const recent = (buckets.get(key) ?? []).filter((stamp) => now - stamp < windowMs);
   recent.push(now);
   buckets.set(key, recent);

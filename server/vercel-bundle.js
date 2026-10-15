@@ -2025,7 +2025,7 @@ function logger(deps, event) {
 var buckets = /* @__PURE__ */ new Map();
 function limited(req, deps, name, max, windowMs) {
   const now = clock(deps);
-  const key = `${name}:${req.socket.remoteAddress ?? "local"}`;
+  const key = `${name}:${req.socket?.remoteAddress ?? "local"}`;
   const recent = (buckets.get(key) ?? []).filter((stamp) => now - stamp < windowMs);
   recent.push(now);
   buckets.set(key, recent);

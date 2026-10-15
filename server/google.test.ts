@@ -3,6 +3,7 @@ import { request as httpRequest, type IncomingHttpHeaders } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { describe, it } from 'node:test';
 import { createZohoServer, type ServerDeps } from './app.ts';
+import { handleGoogleRequest } from './google-app.ts';
 import { encryptString } from './crypto.ts';
 import { createSessionId } from './session.ts';
 import { verifySessionToken } from './session.ts';
@@ -198,6 +199,40 @@ describe('Google persistence ownership', () => {
     assert.equal(visible.length, 1);
     assert.equal(visible[0]?.grantId, grantId);
     assert.equal((await store.listGoogleConnections(other.id)).length, 0);
+    store.close();
+  });
+});
+
+describe('Google connect transport', () => {
+  it('starts Gmail authorization when the request socket is missing', async () => {
+    const store = openTokenStore(':memory:');
+    const headers: Record<string, string> = {};
+    const res = {
+      statusCode: 0,
+      setHeader(name: string, value: string) {
+        headers[name.toLowerCase()] = value;
+      },
+      end() {
+        return;
+      },
+    };
+    await handleGoogleRequest(
+      { method: 'GET', url: '/api/integrations/google/gmail/connect', headers: {}, socket: null } as never,
+      res as never,
+      {
+        config: testConfig(),
+        store,
+        googleConfig: readyGoogle('gmail'),
+        googleOAuth: fakeOAuth({ revoked: [] }),
+        now: () => Date.now(),
+      },
+    );
+    assert.equal(res.statusCode, 302);
+    const location = new URL(headers.location ?? '');
+    assert.equal(location.origin + location.pathname, 'https://accounts.google.com/o/oauth2/v2/auth');
+    assert.match(location.searchParams.get('scope') ?? '', /gmail\.metadata/);
+    assert.equal(location.searchParams.get('redirect_uri'), LOCAL_GOOGLE_REDIRECT_URI);
+    assert.equal(location.searchParams.has('client_secret'), false);
     store.close();
   });
 });

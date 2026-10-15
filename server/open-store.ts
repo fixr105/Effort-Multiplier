@@ -37,6 +37,13 @@ function unavailableStore(): TokenStore {
     upsertGoogleConnection: refused,
     deleteGoogleConnection: () => Promise.resolve(false),
     deleteGoogleGrant: refused,
+    getMicrosoftGrant: () => Promise.resolve(null),
+    insertMicrosoftGrant: refused,
+    updateMicrosoftGrant: refused,
+    listMicrosoftConnections: () => Promise.resolve([]),
+    upsertMicrosoftConnection: refused,
+    deleteMicrosoftConnection: () => Promise.resolve(false),
+    deleteMicrosoftGrant: refused,
     ping: () => Promise.resolve({ tables: [] }),
     close: () => Promise.resolve(),
   };

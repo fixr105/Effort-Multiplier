@@ -1,13 +1,22 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { loadConfig } from './config.ts';
 import { loadGoogleConfig } from './google-config.ts';
+import { loadMicrosoftConfig } from './microsoft-config.ts';
 import { handleZohoRequest, IDENTITY, type ServerDeps } from './app.ts';
 import { openConfiguredStore } from './open-store.ts';
 import { openPostgresStore } from './postgres-store.ts';
 
 let ready: Promise<ServerDeps> | null = null;
 
-const REQUIRED_TABLES = ['oauth_states', 'sessions', 'zoho_connections', 'google_grants', 'google_connections'];
+const REQUIRED_TABLES = [
+  'oauth_states',
+  'sessions',
+  'zoho_connections',
+  'google_grants',
+  'google_connections',
+  'microsoft_grants',
+  'microsoft_connections',
+];
 
 async function reportDatabaseHealth(res: ServerResponse): Promise<void> {
   const databaseUrl = process.env.DATABASE_URL?.trim() || '';
@@ -61,7 +70,12 @@ function context(): Promise<ServerDeps> {
     ready = (async () => {
       const config = loadConfig(process.env);
       const store = await openConfiguredStore(config);
-      return { config, store, googleConfig: loadGoogleConfig(process.env, config.production) };
+      return {
+        config,
+        store,
+        googleConfig: loadGoogleConfig(process.env, config.production),
+        microsoftConfig: loadMicrosoftConfig(process.env, config.production),
+      };
     })();
   }
   return ready;

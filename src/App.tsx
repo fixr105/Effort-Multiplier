@@ -14,8 +14,10 @@ import { ZohoLeadsPreview } from '@/components/ZohoLeadsPreview';
 import { isZohoCardId, zohoProductByCardId } from '@/data/zohoProducts';
 import type { ZohoCatalogProduct } from '@/zohoApi';
 import { googleProductIdFromCard, type GoogleCatalogProduct } from '@/googleApi';
+import { microsoftProductIdFromCard, type MicrosoftCatalogProduct } from '@/microsoftApi';
 import { useZohoConnection } from '@/useZohoConnection';
 import { useGoogleConnection } from '@/useGoogleConnection';
+import { useMicrosoftConnection } from '@/useMicrosoftConnection';
 
 const STORAGE_KEY = 'em_connection_state';
 
@@ -39,6 +41,18 @@ function withoutZoho(state: ConnectionState): ConnectionState {
     }
   }
   return changed ? next : state;
+}
+
+function microsoftCard(product: MicrosoftCatalogProduct): Integration {
+  return {
+    id: product.cardId,
+    name: product.name,
+    description: product.description,
+    category: product.category,
+    color: '#0078d4',
+    initials: product.initials,
+    icon: product.icon,
+  };
 }
 
 function googleCard(product: GoogleCatalogProduct): Integration {
@@ -76,8 +90,10 @@ function App() {
   const [loading, setLoading] = useState(true);
   const zoho = useZohoConnection();
   const google = useGoogleConnection();
+  const microsoft = useMicrosoftConnection();
   const disconnectZohoConnection = zoho.disconnect;
   const disconnectGoogleConnection = google.disconnect;
+  const disconnectMicrosoftConnection = microsoft.disconnect;
 
   useEffect(() => {
     const demoConnections = withoutZoho(loadConnectionState());
@@ -102,7 +118,7 @@ function App() {
   }, [connections, hydrated]);
 
   const handleConfirmConnect = useCallback((integration: Integration) => {
-    if (isZohoCardId(integration.id) || googleProductIdFromCard(integration.id)) return;
+    if (isZohoCardId(integration.id) || googleProductIdFromCard(integration.id) || microsoftProductIdFromCard(integration.id)) return;
     setConnections((prev) => ({ ...prev, [integration.id]: true }));
     setConnectTarget(null);
   }, []);
@@ -121,6 +137,12 @@ function App() {
         setDisconnectTarget(null);
         return;
       }
+      const microsoftProductId = microsoftProductIdFromCard(integration.id);
+      if (microsoftProductId) {
+        await disconnectMicrosoftConnection(microsoftProductId);
+        setDisconnectTarget(null);
+        return;
+      }
       await new Promise((resolve) => setTimeout(resolve, 600));
       setConnections((prev) => {
         const next = { ...prev };
@@ -129,7 +151,7 @@ function App() {
       });
       setDisconnectTarget(null);
     },
-    [disconnectZohoConnection, disconnectGoogleConnection],
+    [disconnectZohoConnection, disconnectGoogleConnection, disconnectMicrosoftConnection],
   );
 
   const zohoIntegrations = useMemo(
@@ -140,10 +162,14 @@ function App() {
     () => google.products.map(googleCard),
     [google.products],
   );
+  const microsoftIntegrations = useMemo(
+    () => microsoft.products.map(microsoftCard),
+    [microsoft.products],
+  );
 
   const visibleIntegrations = useMemo(
-    () => [...zohoIntegrations, ...googleIntegrations],
-    [zohoIntegrations, googleIntegrations],
+    () => [...zohoIntegrations, ...googleIntegrations, ...microsoftIntegrations],
+    [zohoIntegrations, googleIntegrations, microsoftIntegrations],
   );
 
   const displayConnections = useMemo(() => {
@@ -156,13 +182,18 @@ function App() {
       if (product.connected) next[product.cardId] = true;
       else delete next[product.cardId];
     }
+    for (const product of microsoft.products) {
+      if (product.connected) next[product.cardId] = true;
+      else delete next[product.cardId];
+    }
     return next;
-  }, [connections, zoho.products, google.products]);
+  }, [connections, zoho.products, google.products, microsoft.products]);
 
   const filteredIntegrations = useMemo(() => {
     return visibleIntegrations.filter((integration) => {
       const product = zoho.products.find((item) => item.cardId === integration.id);
       const googleProduct = google.products.find((item) => item.cardId === integration.id);
+      const microsoftProduct = microsoft.products.find((item) => item.cardId === integration.id);
       const matchesCategory =
         activeFilter === 'all' || integration.category === activeFilter;
       const matchesStatus =
@@ -171,6 +202,7 @@ function App() {
         (statusFilter === 'available' && (
           (product?.availability === 'available' && !product.connected)
           || (googleProduct?.connectable === true && !googleProduct.connected)
+          || (microsoftProduct?.connectable === true && !microsoftProduct.connected)
         ));
       const matchesSearch =
         search === '' ||
@@ -178,11 +210,11 @@ function App() {
         integration.description.toLowerCase().includes(search.toLowerCase());
       return matchesCategory && matchesStatus && matchesSearch;
     });
-  }, [visibleIntegrations, search, activeFilter, statusFilter, zoho.products, google.products, displayConnections]);
+  }, [visibleIntegrations, search, activeFilter, statusFilter, zoho.products, google.products, microsoft.products, displayConnections]);
 
   const connectedIntegrations = useMemo(
-    () => [...zohoIntegrations, ...googleIntegrations].filter((integration) => displayConnections[integration.id]),
-    [displayConnections, zohoIntegrations, googleIntegrations],
+    () => [...zohoIntegrations, ...googleIntegrations, ...microsoftIntegrations].filter((integration) => displayConnections[integration.id]),
+    [displayConnections, zohoIntegrations, googleIntegrations, microsoftIntegrations],
   );
 
   const connectedCount = connectedIntegrations.length;
@@ -193,7 +225,7 @@ function App() {
 
       <main className="max-w-6xl mx-auto px-5 sm:px-6 lg:px-8">
         <IntroSection
-          totalIntegrations={zohoIntegrations.length + googleIntegrations.length}
+          totalIntegrations={zohoIntegrations.length + googleIntegrations.length + microsoftIntegrations.length}
           connectedCount={connectedCount}
         />
 
@@ -279,6 +311,28 @@ function App() {
           </div>
         ) : null}
 
+        {microsoft.banner ? (
+          <div
+            className={`mb-4 flex flex-col gap-3 rounded-2xl border px-4 py-3 sm:flex-row sm:items-center sm:justify-between ${
+              microsoft.bannerTone === 'error'
+                ? 'border-rose-200 bg-rose-50 text-rose-800'
+                : 'border-emerald-200 bg-emerald-50 text-emerald-800'
+            }`}
+          >
+            <p className="text-sm">{microsoft.banner}</p>
+            {microsoft.showReconnect && microsoft.reconnectProduct ? (
+              <a
+                href={`/api/integrations/microsoft/${microsoft.reconnectProduct}/connect`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="self-start px-3.5 py-2 rounded-lg text-xs font-medium text-white bg-gray-900 hover:bg-gray-800"
+              >
+                Reconnect
+              </a>
+            ) : null}
+          </div>
+        ) : null}
+
         <div className="flex items-center justify-between mb-4">
           <p className="text-xs text-gray-400">
             {loading
@@ -299,6 +353,21 @@ function App() {
             reconnectHref={`/api/integrations/google/${google.previewProductId ?? 'gmail'}/connect`}
             onChooseOrganization={() => undefined}
             onClose={google.closePreview}
+          />
+        ) : null}
+
+        {microsoft.previewOpen ? (
+          <ZohoLeadsPreview
+            title={microsoft.previewTitle}
+            apiDomain="Microsoft"
+            sections={microsoft.sections}
+            organizations={[]}
+            needsOrganization={false}
+            loading={microsoft.loading}
+            error={microsoft.error}
+            reconnectHref={`/api/integrations/microsoft/${microsoft.previewProductId ?? 'outlook-mail'}/connect`}
+            onChooseOrganization={() => undefined}
+            onClose={microsoft.closePreview}
           />
         ) : null}
 
@@ -330,13 +399,16 @@ function App() {
             {filteredIntegrations.map((integration) => {
               const product = zoho.products.find((item) => item.cardId === integration.id);
               const googleProduct = google.products.find((item) => item.cardId === integration.id);
+              const microsoftProduct = microsoft.products.find((item) => item.cardId === integration.id);
               const status = product
                 ? product.connected
                   ? 'connected'
                   : 'not_connected'
                 : googleProduct
                   ? googleProduct.connected ? 'connected' : 'not_connected'
-                  : undefined;
+                  : microsoftProduct
+                    ? microsoftProduct.connected ? 'connected' : 'not_connected'
+                    : undefined;
               return (
                 <IntegrationCard
                   key={integration.id}
@@ -353,6 +425,14 @@ function App() {
                             ? 'Live Google connection'
                             : 'Stored Google connection. New connections are unavailable.'
                           : 'Read-only Google connection'
+                      : microsoftProduct
+                        ? microsoft.checking
+                          ? 'Checking Microsoft connection...'
+                          : microsoftProduct.connected
+                            ? microsoftProduct.connectable
+                              ? 'Live Microsoft connection'
+                              : 'Stored Microsoft connection. New connections are unavailable.'
+                            : 'Read-only Microsoft connection'
                       : product
                         ? zoho.checking
                           ? 'Checking Zoho connection...'
@@ -364,19 +444,23 @@ function App() {
                   connectHref={
                     googleProduct && status === 'not_connected' && googleProduct.connectable
                       ? `/api/integrations/google/${googleProduct.id}/connect`
-                      : status === 'not_connected' && product?.availability === 'available'
-                        ? `/api/integrations/zoho/${product.id}/connect`
-                        : undefined
+                      : microsoftProduct && status === 'not_connected' && microsoftProduct.connectable
+                        ? `/api/integrations/microsoft/${microsoftProduct.id}/connect`
+                        : status === 'not_connected' && product?.availability === 'available'
+                          ? `/api/integrations/zoho/${product.id}/connect`
+                          : undefined
                   }
-                  connectDisabled={Boolean((product && zoho.checking) || (googleProduct && google.checking))}
+                  connectDisabled={Boolean((product && zoho.checking) || (googleProduct && google.checking) || (microsoftProduct && microsoft.checking))}
                   onPreview={
                     googleProduct?.connected
                       ? () => void google.preview(googleProduct.id, googleProduct.name)
-                      : product?.connected
-                        ? () => void zoho.preview(product.id, product.name)
-                        : undefined
+                      : microsoftProduct?.connected
+                        ? () => void microsoft.preview(microsoftProduct.id, microsoftProduct.name)
+                        : product?.connected
+                          ? () => void zoho.preview(product.id, product.name)
+                          : undefined
                   }
-                  previewDisabled={zoho.leadsLoading || google.loading}
+                  previewDisabled={zoho.leadsLoading || google.loading || microsoft.loading}
                   onConnect={setConnectTarget}
                   onDisconnect={setDisconnectTarget}
                 />
@@ -389,7 +473,7 @@ function App() {
       </main>
 
       <ConnectModal
-        integration={connectTarget && (isZohoCardId(connectTarget.id) || googleProductIdFromCard(connectTarget.id)) ? null : connectTarget}
+        integration={connectTarget && (isZohoCardId(connectTarget.id) || googleProductIdFromCard(connectTarget.id) || microsoftProductIdFromCard(connectTarget.id)) ? null : connectTarget}
         onClose={() => setConnectTarget(null)}
         onConfirm={handleConfirmConnect}
       />

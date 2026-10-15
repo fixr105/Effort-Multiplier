@@ -9,6 +9,9 @@ import type { AppConfig } from './config.ts';
 import type { GoogleConfigState } from './google-config.ts';
 import { handleGoogleRequest } from './google-app.ts';
 import type { GoogleOAuth } from './google-oauth.ts';
+import type { MicrosoftConfigState } from './microsoft-config.ts';
+import { handleMicrosoftRequest } from './microsoft-app.ts';
+import type { MicrosoftOAuth } from './microsoft-oauth.ts';
 import { decryptString, encryptString } from './crypto.ts';
 import { assertAccountsOrigin, DomainError } from './domains.ts';
 import {
@@ -71,6 +74,8 @@ export interface ServerDeps {
   logger?: Logger;
   googleConfig?: GoogleConfigState;
   googleOAuth?: GoogleOAuth;
+  microsoftConfig?: MicrosoftConfigState;
+  microsoftOAuth?: MicrosoftOAuth;
 }
 
 interface ActiveSession {
@@ -170,6 +175,11 @@ export async function handleZohoRequest(
 
   if (path.startsWith('/api/integrations/google')) {
     await handleGoogleRequest(req, res, deps);
+    return;
+  }
+
+  if (path.startsWith('/api/integrations/microsoft')) {
+    await handleMicrosoftRequest(req, res, deps);
     return;
   }
 
@@ -794,7 +804,15 @@ function persistenceName(deps: ServerDeps): 'postgres' | 'sqlite' | 'unavailable
   return 'sqlite';
 }
 
-const REQUIRED_TABLES = ['oauth_states', 'sessions', 'zoho_connections', 'google_grants', 'google_connections'];
+const REQUIRED_TABLES = [
+  'oauth_states',
+  'sessions',
+  'zoho_connections',
+  'google_grants',
+  'google_connections',
+  'microsoft_grants',
+  'microsoft_connections',
+];
 
 async function handleHealth(res: ServerResponse, deps: ServerDeps): Promise<void> {
   const persistence = persistenceName(deps);

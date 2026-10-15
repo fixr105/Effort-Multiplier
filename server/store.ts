@@ -57,6 +57,27 @@ export interface GoogleGrantRecord {
   updatedAt: number;
 }
 
+export interface MicrosoftGrantRecord {
+  id: string;
+  sessionId: string;
+  userId: string | null;
+  microsoftOid: string;
+  email: string;
+  accessToken: EncryptedSecret;
+  refreshToken: EncryptedSecret;
+  accessTokenExpiresAt: number;
+  grantedScopes: string;
+  refreshedAt: number | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface MicrosoftConnectionRecord extends MicrosoftGrantRecord {
+  grantId: string;
+  product: string;
+  scopes: string;
+}
+
 export interface GoogleConnectionRecord {
   id: string;
   grantId: string;
@@ -102,6 +123,21 @@ export interface TokenStore {
   }): Promise<void>;
   deleteGoogleConnection(sessionId: string, product: string): Promise<boolean>;
   deleteGoogleGrant(sessionId: string, grantId: string): Promise<void>;
+  getMicrosoftGrant(sessionId: string, microsoftOid: string): Promise<MicrosoftGrantRecord | null>;
+  insertMicrosoftGrant(grant: MicrosoftGrantRecord): Promise<void>;
+  updateMicrosoftGrant(grant: MicrosoftGrantRecord): Promise<void>;
+  listMicrosoftConnections(sessionId: string): Promise<MicrosoftConnectionRecord[]>;
+  upsertMicrosoftConnection(input: {
+    id: string;
+    grantId: string;
+    sessionId: string;
+    product: string;
+    scopes: string;
+    createdAt: number;
+    updatedAt: number;
+  }): Promise<void>;
+  deleteMicrosoftConnection(sessionId: string, product: string): Promise<boolean>;
+  deleteMicrosoftGrant(sessionId: string, grantId: string): Promise<void>;
   ping(): Promise<{ tables: string[] }>;
   close(): Promise<void>;
 }
@@ -159,6 +195,7 @@ export function openTokenStore(filename: string): TokenStore {
   ensureOauthStates(db);
   ensureConnections(db);
   ensureGoogle(db);
+  ensureMicrosoft(db);
 
   if (persistent) {
     chmodSync(filename, 0o600);
@@ -287,6 +324,58 @@ export function openTokenStore(filename: string): TokenStore {
   const deleteGoogleGrant = db.prepare(
     'DELETE FROM google_grants WHERE id = ? AND session_id = ?',
   );
+  const microsoftGrantColumns = `id, session_id, user_id, microsoft_oid, email,
+    access_iv, access_tag, access_ciphertext,
+    refresh_iv, refresh_tag, refresh_ciphertext,
+    access_expires_at, granted_scopes, refreshed_at, created_at, updated_at`;
+  const selectMicrosoftGrant = db.prepare(
+    `SELECT ${microsoftGrantColumns} FROM microsoft_grants WHERE session_id = ? AND microsoft_oid = ?`,
+  );
+  const insertMicrosoftGrant = db.prepare(
+    `INSERT INTO microsoft_grants (
+      id, session_id, user_id, microsoft_oid, email,
+      access_iv, access_tag, access_ciphertext,
+      refresh_iv, refresh_tag, refresh_ciphertext,
+      access_expires_at, granted_scopes, refreshed_at, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  );
+  const updateMicrosoftGrant = db.prepare(
+    `UPDATE microsoft_grants
+     SET email = ?, access_iv = ?, access_tag = ?, access_ciphertext = ?,
+         refresh_iv = ?, refresh_tag = ?, refresh_ciphertext = ?,
+         access_expires_at = ?, granted_scopes = ?, refreshed_at = ?, updated_at = ?
+     WHERE id = ? AND session_id = ?`,
+  );
+  const listMicrosoftConnections = db.prepare(
+    `SELECT c.id AS connection_id, c.grant_id, c.product, c.scopes,
+            c.created_at AS connection_created_at, c.updated_at AS connection_updated_at,
+            g.id, g.session_id, g.user_id, g.microsoft_oid, g.email,
+            g.access_iv, g.access_tag, g.access_ciphertext,
+            g.refresh_iv, g.refresh_tag, g.refresh_ciphertext,
+            g.access_expires_at, g.granted_scopes, g.refreshed_at, g.created_at, g.updated_at
+     FROM microsoft_connections c
+     JOIN microsoft_grants g ON g.id = c.grant_id AND g.session_id = c.session_id
+     WHERE c.session_id = ?`,
+  );
+  const upsertMicrosoftConnection = db.prepare(
+    `INSERT INTO microsoft_connections (id, grant_id, session_id, product, scopes, created_at, updated_at)
+     SELECT ?, id, session_id, ?, ?, ?, ?
+     FROM microsoft_grants
+     WHERE id = ? AND session_id = ?
+     ON CONFLICT(session_id, product) DO UPDATE SET
+       grant_id = excluded.grant_id,
+       scopes = excluded.scopes,
+       updated_at = excluded.updated_at`,
+  );
+  const deleteMicrosoftConnection = db.prepare(
+    'DELETE FROM microsoft_connections WHERE session_id = ? AND product = ?',
+  );
+  const deleteMicrosoftConnectionsForGrant = db.prepare(
+    'DELETE FROM microsoft_connections WHERE grant_id = ? AND session_id = ?',
+  );
+  const deleteMicrosoftGrant = db.prepare(
+    'DELETE FROM microsoft_grants WHERE id = ? AND session_id = ?',
+  );
 
   function transaction(run: () => void): void {
     db.exec('BEGIN IMMEDIATE');
@@ -318,6 +407,12 @@ export function openTokenStore(filename: string): TokenStore {
           sessionId,
         );
         db.prepare('UPDATE google_connections SET session_id = ? WHERE session_id = ?').run(next.id, sessionId);
+        db.prepare('UPDATE microsoft_grants SET session_id = ?, user_id = ? WHERE session_id = ?').run(
+          next.id,
+          next.userId,
+          sessionId,
+        );
+        db.prepare('UPDATE microsoft_connections SET session_id = ? WHERE session_id = ?').run(next.id, sessionId);
         deleteStatesForSession.run(sessionId);
         deleteSession.run(sessionId);
       });
@@ -452,9 +547,58 @@ export function openTokenStore(filename: string): TokenStore {
       deleteGoogleConnectionsForGrant.run(grantId, sessionId);
       deleteGoogleGrant.run(grantId, sessionId);
     },
+    async getMicrosoftGrant(sessionId, microsoftOid) {
+      return mapMicrosoftGrant(selectMicrosoftGrant.get(sessionId, microsoftOid) as unknown as MicrosoftGrantRow | undefined);
+    },
+    async insertMicrosoftGrant(grant) {
+      insertMicrosoftGrant.run(...microsoftGrantValues(grant));
+    },
+    async updateMicrosoftGrant(grant) {
+      updateMicrosoftGrant.run(
+        grant.email,
+        grant.accessToken.iv,
+        grant.accessToken.tag,
+        grant.accessToken.ciphertext,
+        grant.refreshToken.iv,
+        grant.refreshToken.tag,
+        grant.refreshToken.ciphertext,
+        grant.accessTokenExpiresAt,
+        grant.grantedScopes,
+        grant.refreshedAt,
+        grant.updatedAt,
+        grant.id,
+        grant.sessionId,
+      );
+    },
+    async listMicrosoftConnections(sessionId) {
+      const rows = listMicrosoftConnections.all(sessionId) as unknown as MicrosoftConnectionRow[];
+      return rows.map((row) => mapMicrosoftConnection(row)).filter((row): row is MicrosoftConnectionRecord => row !== null);
+    },
+    async upsertMicrosoftConnection(input) {
+      const result = upsertMicrosoftConnection.run(
+        input.id,
+        input.product,
+        input.scopes,
+        input.createdAt,
+        input.updatedAt,
+        input.grantId,
+        input.sessionId,
+      );
+      if (Number(result.changes) !== 1) {
+        throw new Error('microsoft_grant_session_mismatch');
+      }
+    },
+    async deleteMicrosoftConnection(sessionId, product) {
+      const result = deleteMicrosoftConnection.run(sessionId, product);
+      return Number(result.changes) === 1;
+    },
+    async deleteMicrosoftGrant(sessionId, grantId) {
+      deleteMicrosoftConnectionsForGrant.run(grantId, sessionId);
+      deleteMicrosoftGrant.run(grantId, sessionId);
+    },
     async ping() {
       const rows = db
-        .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('sessions', 'oauth_states', 'zoho_connections', 'google_grants', 'google_connections') ORDER BY name`)
+        .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('sessions', 'oauth_states', 'zoho_connections', 'google_grants', 'google_connections', 'microsoft_grants', 'microsoft_connections') ORDER BY name`)
         .all() as { name: string }[];
       return { tables: rows.map((row) => row.name) };
     },
@@ -578,6 +722,132 @@ function mapGoogleGrant(row: GoogleGrantRow | undefined): GoogleGrantRecord | nu
 
 function mapGoogleConnection(row: GoogleConnectionRow | undefined): GoogleConnectionRecord | null {
   const grant = mapGoogleGrant(row);
+  if (!grant || !row || typeof row.product !== 'string' || typeof row.connection_id !== 'string') return null;
+  return {
+    ...grant,
+    id: row.connection_id,
+    grantId: row.grant_id,
+    product: row.product,
+    scopes: row.scopes,
+    createdAt: Number(row.connection_created_at),
+    updatedAt: Number(row.connection_updated_at),
+  };
+}
+
+function ensureMicrosoft(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS microsoft_grants (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      user_id TEXT,
+      microsoft_oid TEXT NOT NULL,
+      email TEXT NOT NULL,
+      access_iv TEXT NOT NULL,
+      access_tag TEXT NOT NULL,
+      access_ciphertext TEXT NOT NULL,
+      refresh_iv TEXT NOT NULL,
+      refresh_tag TEXT NOT NULL,
+      refresh_ciphertext TEXT NOT NULL,
+      access_expires_at INTEGER NOT NULL,
+      granted_scopes TEXT NOT NULL,
+      refreshed_at INTEGER,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      FOREIGN KEY (session_id) REFERENCES sessions(id),
+      UNIQUE (session_id, microsoft_oid)
+    );
+    CREATE TABLE IF NOT EXISTS microsoft_connections (
+      id TEXT PRIMARY KEY,
+      grant_id TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      product TEXT NOT NULL,
+      scopes TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      FOREIGN KEY (grant_id) REFERENCES microsoft_grants(id),
+      FOREIGN KEY (session_id) REFERENCES sessions(id),
+      UNIQUE (session_id, product)
+    );
+  `);
+}
+
+interface MicrosoftGrantRow {
+  id: string;
+  session_id: string;
+  user_id: string | null;
+  microsoft_oid: string;
+  email: string;
+  access_iv: string;
+  access_tag: string;
+  access_ciphertext: string;
+  refresh_iv: string;
+  refresh_tag: string;
+  refresh_ciphertext: string;
+  access_expires_at: number;
+  granted_scopes: string;
+  refreshed_at: number | null;
+  created_at: number;
+  updated_at: number;
+}
+
+interface MicrosoftConnectionRow extends MicrosoftGrantRow {
+  connection_id: string;
+  grant_id: string;
+  product: string;
+  scopes: string;
+  connection_created_at: number;
+  connection_updated_at: number;
+}
+
+function microsoftGrantValues(grant: MicrosoftGrantRecord): Array<string | number | null> {
+  return [
+    grant.id,
+    grant.sessionId,
+    grant.userId,
+    grant.microsoftOid,
+    grant.email,
+    grant.accessToken.iv,
+    grant.accessToken.tag,
+    grant.accessToken.ciphertext,
+    grant.refreshToken.iv,
+    grant.refreshToken.tag,
+    grant.refreshToken.ciphertext,
+    grant.accessTokenExpiresAt,
+    grant.grantedScopes,
+    grant.refreshedAt,
+    grant.createdAt,
+    grant.updatedAt,
+  ];
+}
+
+function mapMicrosoftGrant(row: MicrosoftGrantRow | undefined): MicrosoftGrantRecord | null {
+  if (!row || typeof row.id !== 'string') return null;
+  return {
+    id: row.id,
+    sessionId: row.session_id,
+    userId: typeof row.user_id === 'string' ? row.user_id : null,
+    microsoftOid: row.microsoft_oid,
+    email: row.email,
+    accessToken: {
+      iv: row.access_iv,
+      tag: row.access_tag,
+      ciphertext: row.access_ciphertext,
+    },
+    refreshToken: {
+      iv: row.refresh_iv,
+      tag: row.refresh_tag,
+      ciphertext: row.refresh_ciphertext,
+    },
+    accessTokenExpiresAt: Number(row.access_expires_at),
+    grantedScopes: row.granted_scopes,
+    refreshedAt: row.refreshed_at === null || row.refreshed_at === undefined ? null : Number(row.refreshed_at),
+    createdAt: Number(row.created_at),
+    updatedAt: Number(row.updated_at),
+  };
+}
+
+function mapMicrosoftConnection(row: MicrosoftConnectionRow | undefined): MicrosoftConnectionRecord | null {
+  const grant = mapMicrosoftGrant(row);
   if (!grant || !row || typeof row.product !== 'string' || typeof row.connection_id !== 'string') return null;
   return {
     ...grant,

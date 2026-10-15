@@ -57,6 +57,14 @@ async function openPostgresStore(databaseUrl) {
           "UPDATE google_connections SET session_id = $1 WHERE session_id = $2",
           [next.id, sessionId]
         );
+        await client.query(
+          "UPDATE microsoft_grants SET session_id = $1, user_id = $2 WHERE session_id = $3",
+          [next.id, next.userId, sessionId]
+        );
+        await client.query(
+          "UPDATE microsoft_connections SET session_id = $1 WHERE session_id = $2",
+          [next.id, sessionId]
+        );
         await client.query("DELETE FROM oauth_states WHERE session_id = $1", [sessionId]);
         await client.query("DELETE FROM sessions WHERE id = $1", [sessionId]);
         await client.query("COMMIT");
@@ -272,6 +280,96 @@ async function openPostgresStore(databaseUrl) {
         [grantId, sessionId]
       );
     },
+    async getMicrosoftGrant(sessionId, microsoftOid) {
+      const result = await pool.query(
+        `${microsoftGrantSelect()} WHERE session_id = $1 AND microsoft_oid = $2`,
+        [sessionId, microsoftOid]
+      );
+      return mapMicrosoftGrant(result.rows[0]);
+    },
+    async insertMicrosoftGrant(grant) {
+      await pool.query(
+        `INSERT INTO microsoft_grants (
+          id, session_id, user_id, microsoft_oid, email,
+          access_iv, access_tag, access_ciphertext,
+          refresh_iv, refresh_tag, refresh_ciphertext,
+          access_expires_at, granted_scopes, refreshed_at, created_at, updated_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+        microsoftGrantValues(grant)
+      );
+    },
+    async updateMicrosoftGrant(grant) {
+      await pool.query(
+        `UPDATE microsoft_grants
+         SET email = $1, access_iv = $2, access_tag = $3, access_ciphertext = $4,
+             refresh_iv = $5, refresh_tag = $6, refresh_ciphertext = $7,
+             access_expires_at = $8, granted_scopes = $9, refreshed_at = $10, updated_at = $11
+         WHERE id = $12 AND session_id = $13`,
+        [
+          grant.email,
+          grant.accessToken.iv,
+          grant.accessToken.tag,
+          grant.accessToken.ciphertext,
+          grant.refreshToken.iv,
+          grant.refreshToken.tag,
+          grant.refreshToken.ciphertext,
+          grant.accessTokenExpiresAt,
+          grant.grantedScopes,
+          grant.refreshedAt,
+          grant.updatedAt,
+          grant.id,
+          grant.sessionId
+        ]
+      );
+    },
+    async listMicrosoftConnections(sessionId) {
+      const result = await pool.query(
+        `SELECT c.id AS connection_id, c.grant_id, c.product, c.scopes,
+                c.created_at AS connection_created_at, c.updated_at AS connection_updated_at,
+                g.id, g.session_id, g.user_id, g.microsoft_oid, g.email,
+                g.access_iv, g.access_tag, g.access_ciphertext,
+                g.refresh_iv, g.refresh_tag, g.refresh_ciphertext,
+                g.access_expires_at, g.granted_scopes, g.refreshed_at, g.created_at, g.updated_at
+         FROM microsoft_connections c
+         JOIN microsoft_grants g ON g.id = c.grant_id AND g.session_id = c.session_id
+         WHERE c.session_id = $1`,
+        [sessionId]
+      );
+      return result.rows.map((row) => mapMicrosoftConnection(row)).filter((row) => row !== null);
+    },
+    async upsertMicrosoftConnection(input) {
+      const result = await pool.query(
+        `INSERT INTO microsoft_connections (id, grant_id, session_id, product, scopes, created_at, updated_at)
+         SELECT $1, id, session_id, $2, $3, $4, $5
+         FROM microsoft_grants
+         WHERE id = $6 AND session_id = $7
+         ON CONFLICT (session_id, product) DO UPDATE SET
+           grant_id = EXCLUDED.grant_id,
+           scopes = EXCLUDED.scopes,
+           updated_at = EXCLUDED.updated_at`,
+        [input.id, input.product, input.scopes, input.createdAt, input.updatedAt, input.grantId, input.sessionId]
+      );
+      if ((result.rowCount ?? 0) !== 1) {
+        throw new Error("microsoft_grant_session_mismatch");
+      }
+    },
+    async deleteMicrosoftConnection(sessionId, product) {
+      const result = await pool.query(
+        "DELETE FROM microsoft_connections WHERE session_id = $1 AND product = $2",
+        [sessionId, product]
+      );
+      return (result.rowCount ?? 0) === 1;
+    },
+    async deleteMicrosoftGrant(sessionId, grantId) {
+      await pool.query(
+        "DELETE FROM microsoft_connections WHERE grant_id = $1 AND session_id = $2",
+        [grantId, sessionId]
+      );
+      await pool.query(
+        "DELETE FROM microsoft_grants WHERE id = $1 AND session_id = $2",
+        [grantId, sessionId]
+      );
+    },
     async setOrganization(owner, organizationId) {
       const result = await pool.query(
         "UPDATE zoho_connections SET organization_id = $1, updated_at = $2 WHERE session_id = $3 AND product = $4",
@@ -372,6 +470,71 @@ function mapGoogleGrant(row) {
 }
 function mapGoogleConnection(row) {
   const grant = mapGoogleGrant(row);
+  if (!grant || !row || typeof row.product !== "string" || typeof row.connection_id !== "string") return null;
+  return {
+    ...grant,
+    id: row.connection_id,
+    grantId: String(row.grant_id),
+    product: row.product,
+    scopes: String(row.scopes),
+    createdAt: Number(row.connection_created_at),
+    updatedAt: Number(row.connection_updated_at)
+  };
+}
+function microsoftGrantSelect() {
+  return `SELECT id, session_id, user_id, microsoft_oid, email,
+            access_iv, access_tag, access_ciphertext,
+            refresh_iv, refresh_tag, refresh_ciphertext,
+            access_expires_at, granted_scopes, refreshed_at, created_at, updated_at
+     FROM microsoft_grants`;
+}
+function microsoftGrantValues(grant) {
+  return [
+    grant.id,
+    grant.sessionId,
+    grant.userId,
+    grant.microsoftOid,
+    grant.email,
+    grant.accessToken.iv,
+    grant.accessToken.tag,
+    grant.accessToken.ciphertext,
+    grant.refreshToken.iv,
+    grant.refreshToken.tag,
+    grant.refreshToken.ciphertext,
+    grant.accessTokenExpiresAt,
+    grant.grantedScopes,
+    grant.refreshedAt,
+    grant.createdAt,
+    grant.updatedAt
+  ];
+}
+function mapMicrosoftGrant(row) {
+  if (!row || typeof row.id !== "string") return null;
+  return {
+    id: row.id,
+    sessionId: String(row.session_id),
+    userId: typeof row.user_id === "string" ? row.user_id : null,
+    microsoftOid: String(row.microsoft_oid),
+    email: String(row.email),
+    accessToken: {
+      iv: String(row.access_iv),
+      tag: String(row.access_tag),
+      ciphertext: String(row.access_ciphertext)
+    },
+    refreshToken: {
+      iv: String(row.refresh_iv),
+      tag: String(row.refresh_tag),
+      ciphertext: String(row.refresh_ciphertext)
+    },
+    accessTokenExpiresAt: Number(row.access_expires_at),
+    grantedScopes: String(row.granted_scopes),
+    refreshedAt: row.refreshed_at === null || row.refreshed_at === void 0 ? null : Number(row.refreshed_at),
+    createdAt: Number(row.created_at),
+    updatedAt: Number(row.updated_at)
+  };
+}
+function mapMicrosoftConnection(row) {
+  const grant = mapMicrosoftGrant(row);
   if (!grant || !row || typeof row.product !== "string" || typeof row.connection_id !== "string") return null;
   return {
     ...grant,
@@ -488,6 +651,35 @@ var init_postgres_store = __esm({
     created_at BIGINT NOT NULL,
     updated_at BIGINT NOT NULL,
     UNIQUE (session_id, product)
+  )`,
+      `CREATE TABLE IF NOT EXISTS microsoft_grants (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES sessions(id),
+    user_id TEXT,
+    microsoft_oid TEXT NOT NULL,
+    email TEXT NOT NULL,
+    access_iv TEXT NOT NULL,
+    access_tag TEXT NOT NULL,
+    access_ciphertext TEXT NOT NULL,
+    refresh_iv TEXT NOT NULL,
+    refresh_tag TEXT NOT NULL,
+    refresh_ciphertext TEXT NOT NULL,
+    access_expires_at BIGINT NOT NULL,
+    granted_scopes TEXT NOT NULL,
+    refreshed_at BIGINT,
+    created_at BIGINT NOT NULL,
+    updated_at BIGINT NOT NULL,
+    UNIQUE (session_id, microsoft_oid)
+  )`,
+      `CREATE TABLE IF NOT EXISTS microsoft_connections (
+    id TEXT PRIMARY KEY,
+    grant_id TEXT NOT NULL REFERENCES microsoft_grants(id),
+    session_id TEXT NOT NULL REFERENCES sessions(id),
+    product TEXT NOT NULL,
+    scopes TEXT NOT NULL,
+    created_at BIGINT NOT NULL,
+    updated_at BIGINT NOT NULL,
+    UNIQUE (session_id, product)
   )`
     ];
     REQUIRED_TABLES2 = [
@@ -495,7 +687,9 @@ var init_postgres_store = __esm({
       "sessions",
       "zoho_connections",
       "google_grants",
-      "google_connections"
+      "google_connections",
+      "microsoft_grants",
+      "microsoft_connections"
     ];
   }
 });
@@ -1087,8 +1281,412 @@ function confirmedProducts(value) {
   return selected;
 }
 
+// server/microsoft-products.ts
+var MICROSOFT_IDENTITY_SCOPES = [
+  "openid",
+  "profile",
+  "email",
+  "offline_access",
+  "https://graph.microsoft.com/User.Read"
+];
+var CONFIRMABLE_REASON2 = "Shown after an administrator sets this id in MICROSOFT_CONFIRMED_PRODUCTS. That value is the trusted confirmation that the Entra app has this permission and the named Microsoft API is available. This app cannot see that configuration without administrator credentials.";
+var MICROSOFT_PRODUCTS = [
+  {
+    id: "outlook-mail",
+    name: "Outlook Mail",
+    description: "Read subject, sender, and date for recent messages.",
+    category: "email",
+    initials: "OM",
+    icon: "Mail",
+    docsUrl: "https://learn.microsoft.com/en-us/graph/api/user-list-messages",
+    scopes: [{
+      scope: "https://graph.microsoft.com/Mail.ReadBasic",
+      purpose: "List messages and read subject, sender, and received time. Message bodies are not requested."
+    }],
+    operation: "List recent message metadata.",
+    availability: "confirmable",
+    adminConsent: false,
+    reason: CONFIRMABLE_REASON2
+  },
+  {
+    id: "outlook-calendar",
+    name: "Outlook Calendar",
+    description: "Read upcoming events on your calendar.",
+    category: "calendar",
+    initials: "OC",
+    icon: "Calendar",
+    docsUrl: "https://learn.microsoft.com/en-us/graph/api/user-list-events",
+    scopes: [{
+      scope: "https://graph.microsoft.com/Calendars.Read",
+      purpose: "List upcoming events."
+    }],
+    operation: "List upcoming events.",
+    availability: "confirmable",
+    adminConsent: false,
+    reason: CONFIRMABLE_REASON2
+  },
+  {
+    id: "contacts",
+    name: "Microsoft Contacts",
+    description: "Read names and email addresses from your contacts.",
+    category: "crm",
+    initials: "MC",
+    icon: "Users",
+    docsUrl: "https://learn.microsoft.com/en-us/graph/api/user-list-contacts",
+    scopes: [{
+      scope: "https://graph.microsoft.com/Contacts.Read",
+      purpose: "List contact names and email addresses."
+    }],
+    operation: "List contacts.",
+    availability: "confirmable",
+    adminConsent: false,
+    reason: CONFIRMABLE_REASON2
+  },
+  {
+    id: "teams",
+    name: "Microsoft Teams",
+    description: "List teams you have joined.",
+    category: "email",
+    initials: "MT",
+    icon: "MessageSquare",
+    docsUrl: "https://learn.microsoft.com/en-us/graph/api/user-list-joinedteams",
+    scopes: [{
+      scope: "https://graph.microsoft.com/Team.ReadBasic.All",
+      purpose: "List joined teams. A tenant administrator must consent to this permission."
+    }],
+    operation: "List joined teams.",
+    availability: "confirmable",
+    adminConsent: true,
+    reason: `${CONFIRMABLE_REASON2} Team.ReadBasic.All requires tenant admin consent.`
+  },
+  {
+    id: "onedrive",
+    name: "OneDrive",
+    description: "List files and folders in your OneDrive.",
+    category: "files",
+    initials: "OD",
+    icon: "Folder",
+    docsUrl: "https://learn.microsoft.com/en-us/graph/api/driveitem-list-children",
+    scopes: [{
+      scope: "https://graph.microsoft.com/Files.Read",
+      purpose: "List files in the signed-in user OneDrive. File contents are not downloaded."
+    }],
+    operation: "List OneDrive items.",
+    availability: "confirmable",
+    adminConsent: false,
+    reason: CONFIRMABLE_REASON2
+  },
+  {
+    id: "sharepoint",
+    name: "SharePoint",
+    description: "List SharePoint sites you follow.",
+    category: "files",
+    initials: "SP",
+    icon: "Folder",
+    docsUrl: "https://learn.microsoft.com/en-us/graph/api/sites-list-followed",
+    scopes: [{
+      scope: "https://graph.microsoft.com/Sites.Read.All",
+      purpose: "List followed sites. A tenant administrator must consent to this permission."
+    }],
+    operation: "List followed SharePoint sites.",
+    availability: "confirmable",
+    adminConsent: true,
+    reason: `${CONFIRMABLE_REASON2} Sites.Read.All requires tenant admin consent.`
+  },
+  {
+    id: "word",
+    name: "Word",
+    description: "Find Word documents in your OneDrive.",
+    category: "files",
+    initials: "WD",
+    icon: "FileText",
+    docsUrl: "https://learn.microsoft.com/en-us/graph/api/driveitem-search",
+    scopes: [{
+      scope: "https://graph.microsoft.com/Files.Read",
+      purpose: "Find Word documents. Document bodies are not downloaded."
+    }],
+    operation: "Find Word documents.",
+    availability: "confirmable",
+    adminConsent: false,
+    reason: CONFIRMABLE_REASON2
+  },
+  {
+    id: "excel",
+    name: "Excel",
+    description: "Find a workbook and read a small range.",
+    category: "files",
+    initials: "XL",
+    icon: "FileText",
+    docsUrl: "https://learn.microsoft.com/en-us/graph/api/range-get",
+    scopes: [{
+      scope: "https://graph.microsoft.com/Files.Read",
+      purpose: "Find a workbook and read A1:E5."
+    }],
+    operation: "Find one workbook and read A1:E5.",
+    availability: "confirmable",
+    adminConsent: false,
+    reason: CONFIRMABLE_REASON2
+  },
+  {
+    id: "powerpoint",
+    name: "PowerPoint",
+    description: "Find PowerPoint presentations in your OneDrive.",
+    category: "files",
+    initials: "PP",
+    icon: "FileText",
+    docsUrl: "https://learn.microsoft.com/en-us/graph/api/driveitem-search",
+    scopes: [{
+      scope: "https://graph.microsoft.com/Files.Read",
+      purpose: "Find presentations. Slide contents are not downloaded."
+    }],
+    operation: "Find PowerPoint presentations.",
+    availability: "confirmable",
+    adminConsent: false,
+    reason: CONFIRMABLE_REASON2
+  },
+  {
+    id: "onenote",
+    name: "OneNote",
+    description: "List your OneNote notebooks.",
+    category: "files",
+    initials: "ON",
+    icon: "FileText",
+    docsUrl: "https://learn.microsoft.com/en-us/graph/api/onenote-list-notebooks",
+    scopes: [{
+      scope: "https://graph.microsoft.com/Notes.Read",
+      purpose: "List notebooks. Page contents are not requested."
+    }],
+    operation: "List notebooks.",
+    availability: "confirmable",
+    adminConsent: false,
+    reason: CONFIRMABLE_REASON2
+  },
+  {
+    id: "todo",
+    name: "Microsoft To Do",
+    description: "Read your To Do lists and tasks.",
+    category: "project",
+    initials: "TD",
+    icon: "CheckSquare",
+    docsUrl: "https://learn.microsoft.com/en-us/graph/api/todo-list-lists",
+    scopes: [{
+      scope: "https://graph.microsoft.com/Tasks.Read",
+      purpose: "List To Do lists and tasks."
+    }],
+    operation: "List To Do lists and tasks.",
+    availability: "confirmable",
+    adminConsent: false,
+    reason: CONFIRMABLE_REASON2
+  },
+  {
+    id: "planner",
+    name: "Microsoft Planner",
+    description: "Read Planner tasks assigned to you.",
+    category: "project",
+    initials: "PL",
+    icon: "CheckSquare",
+    docsUrl: "https://learn.microsoft.com/en-us/graph/api/planneruser-list-tasks",
+    scopes: [{
+      scope: "https://graph.microsoft.com/Tasks.Read",
+      purpose: "List Planner tasks assigned to the signed-in user."
+    }],
+    operation: "List assigned Planner tasks.",
+    availability: "confirmable",
+    adminConsent: false,
+    reason: CONFIRMABLE_REASON2
+  },
+  {
+    id: "teams-meetings",
+    name: "Teams meetings",
+    description: "Read Teams meeting records.",
+    category: "calendar",
+    initials: "TM",
+    icon: "Calendar",
+    docsUrl: "https://learn.microsoft.com/en-us/graph/api/onlinemeeting-get",
+    scopes: [],
+    operation: "Not available. Listing meetings needs an application access policy.",
+    availability: "blocked",
+    adminConsent: true,
+    reason: "Graph onlineMeetings does not provide a user list without a meeting id or an application access policy. The connector stays hidden."
+  },
+  {
+    id: "bookings",
+    name: "Microsoft Bookings",
+    description: "Read Bookings businesses and appointments.",
+    category: "calendar",
+    initials: "BK",
+    icon: "Calendar",
+    docsUrl: "https://learn.microsoft.com/en-us/graph/api/bookingbusiness-list",
+    scopes: [],
+    operation: "Not available. Bookings has no delegated read-only permission.",
+    availability: "blocked",
+    adminConsent: true,
+    reason: "The Bookings list API uses application or read-write permissions. A read-only delegated connector is not available, so it stays hidden."
+  },
+  {
+    id: "forms",
+    name: "Microsoft Forms",
+    description: "Read forms and responses.",
+    category: "files",
+    initials: "MF",
+    icon: "FileText",
+    docsUrl: "https://learn.microsoft.com/en-us/graph/overview",
+    scopes: [],
+    operation: "Not available. Microsoft Forms has no supported personal list API.",
+    availability: "blocked",
+    adminConsent: false,
+    reason: "Microsoft Graph does not offer a supported API to list a user's Forms. The connector stays hidden."
+  },
+  {
+    id: "power-bi",
+    name: "Power BI",
+    description: "List Power BI reports.",
+    category: "marketing",
+    initials: "PB",
+    icon: "BarChart3",
+    docsUrl: "https://learn.microsoft.com/en-us/rest/api/power-bi/",
+    scopes: [],
+    operation: "Not available. Power BI uses a separate resource audience.",
+    availability: "blocked",
+    adminConsent: true,
+    reason: "Power BI tokens are issued for analysis.windows.net, not Microsoft Graph. That separate authorization flow is not configured, so the connector stays hidden."
+  },
+  {
+    id: "dynamics",
+    name: "Dynamics 365",
+    description: "Read Dynamics 365 records.",
+    category: "crm",
+    initials: "D3",
+    icon: "Users",
+    docsUrl: "https://learn.microsoft.com/en-us/power-apps/developer/data-platform/webapi/overview",
+    scopes: [],
+    operation: "Not available. Dynamics needs an environment URL.",
+    availability: "blocked",
+    adminConsent: true,
+    reason: "Dataverse calls a customer environment host that is not configured. The connector stays hidden."
+  },
+  {
+    id: "arm",
+    name: "Azure Resource Manager",
+    description: "List Azure subscriptions.",
+    category: "project",
+    initials: "AZ",
+    icon: "Cloud",
+    docsUrl: "https://learn.microsoft.com/en-us/rest/api/resources/",
+    scopes: [],
+    operation: "Not available. Azure Resource Manager uses a separate audience.",
+    availability: "blocked",
+    adminConsent: true,
+    reason: "ARM tokens are issued for management.azure.com. That resource is not part of the Graph grant, so the connector stays hidden."
+  },
+  {
+    id: "devops",
+    name: "Azure DevOps",
+    description: "List Azure DevOps projects.",
+    category: "project",
+    initials: "DO",
+    icon: "CheckSquare",
+    docsUrl: "https://learn.microsoft.com/en-us/rest/api/azure/devops/",
+    scopes: [],
+    operation: "Not available. Azure DevOps uses a separate resource.",
+    availability: "blocked",
+    adminConsent: true,
+    reason: "Azure DevOps uses its own resource id and organization URL. Neither is configured, so the connector stays hidden."
+  },
+  {
+    id: "power-platform",
+    name: "Power Platform",
+    description: "List Power Platform environments.",
+    category: "project",
+    initials: "PW",
+    icon: "SquareDot",
+    docsUrl: "https://learn.microsoft.com/en-us/power-platform/admin/programming-power-platform",
+    scopes: [],
+    operation: "Not available. Power Platform uses a separate admin API.",
+    availability: "blocked",
+    adminConsent: true,
+    reason: "The Power Platform admin API is a separate audience and needs tenant configuration that is not present. The connector stays hidden."
+  }
+];
+function microsoftProductById(id) {
+  return MICROSOFT_PRODUCTS.find((product) => product.id === id) ?? null;
+}
+function requestedScopes2(product) {
+  return [...product.scopes.map((item) => item.scope), ...MICROSOFT_IDENTITY_SCOPES];
+}
+function visibleMicrosoftProducts(confirmed) {
+  const allowed = new Set(confirmed);
+  return MICROSOFT_PRODUCTS.filter((product) => product.availability === "confirmable" && allowed.has(product.id));
+}
+
+// server/microsoft-config.ts
+var LOCAL_MICROSOFT_REDIRECT_URI = "http://localhost:5173/api/integrations/microsoft/callback";
+var PRODUCTION_MICROSOFT_REDIRECT_URI = "https://em.multiplierclub.in/api/integrations/microsoft/callback";
+var TENANT_PATTERN = /^(common|organizations|consumers|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
+var PRODUCT_ID2 = /^[a-z0-9-]{1,40}$/;
+function loadMicrosoftConfig(env, production) {
+  const clientId = env.MICROSOFT_CLIENT_ID?.trim() ?? "";
+  const clientSecret = env.MICROSOFT_CLIENT_SECRET?.trim() ?? "";
+  const redirectUri = env.MICROSOFT_REDIRECT_URI?.trim() ?? "";
+  const tenant = env.MICROSOFT_TENANT?.trim() ?? "";
+  if (!clientId && !clientSecret && !redirectUri && !tenant) {
+    return {
+      status: "absent",
+      message: "MICROSOFT_CLIENT_ID is missing. Set the Microsoft Entra app in the server environment."
+    };
+  }
+  if (!clientId) return { status: "invalid", message: "MICROSOFT_CLIENT_ID is missing. Set it in the server environment." };
+  if (!clientSecret) return { status: "invalid", message: "MICROSOFT_CLIENT_SECRET is missing. Set it in the server environment." };
+  if (!redirectUri) return { status: "invalid", message: "MICROSOFT_REDIRECT_URI is missing. Set it in the server environment." };
+  if (!TENANT_PATTERN.test(tenant)) {
+    return {
+      status: "invalid",
+      message: "MICROSOFT_TENANT must be common, organizations, consumers, or a tenant id."
+    };
+  }
+  const expected = production ? PRODUCTION_MICROSOFT_REDIRECT_URI : LOCAL_MICROSOFT_REDIRECT_URI;
+  let url;
+  try {
+    url = new URL(redirectUri);
+  } catch {
+    return {
+      status: "invalid",
+      message: `MICROSOFT_REDIRECT_URI must be ${expected}. The server will not substitute a different callback URL.`
+    };
+  }
+  if (url.username || url.password || url.search || url.hash || redirectUri !== expected) {
+    return {
+      status: "invalid",
+      message: `MICROSOFT_REDIRECT_URI must be ${expected}. The server will not substitute a different callback URL.`
+    };
+  }
+  return {
+    status: "ready",
+    settings: {
+      clientId,
+      clientSecret,
+      redirectUri,
+      tenant,
+      confirmedProducts: confirmedProducts2(env.MICROSOFT_CONFIRMED_PRODUCTS)
+    }
+  };
+}
+function confirmedProducts2(value) {
+  if (!value) return [];
+  const known = new Set(
+    MICROSOFT_PRODUCTS.filter((product) => product.availability === "confirmable").map((product) => product.id)
+  );
+  const selected = [];
+  for (const part of value.split(",")) {
+    const id = part.trim();
+    if (!PRODUCT_ID2.test(id) || !known.has(id) || selected.includes(id)) continue;
+    selected.push(id);
+  }
+  return selected;
+}
+
 // server/app.ts
-import { randomUUID as randomUUID3 } from "node:crypto";
+import { randomUUID as randomUUID4 } from "node:crypto";
 
 // server/google-app.ts
 import { randomUUID as randomUUID2 } from "node:crypto";
@@ -1296,9 +1894,9 @@ async function readSheet(token, fetchImpl, id) {
     token,
     fetchImpl
   );
-  const values = arrayOf(record(body)?.values);
-  const firstRow = arrayOf(values[0]).map((cell) => typeof cell === "string" ? cell : "").filter(Boolean);
-  return { id, title: firstRow[0] || "Spreadsheet", detail: `${values.length} row${values.length === 1 ? "" : "s"} read` };
+  const values2 = arrayOf(record(body)?.values);
+  const firstRow = arrayOf(values2[0]).map((cell) => typeof cell === "string" ? cell : "").filter(Boolean);
+  return { id, title: firstRow[0] || "Spreadsheet", detail: `${values2.length} row${values2.length === 1 ? "" : "s"} read` };
 }
 async function readSlides(token, fetchImpl, id) {
   const body = await googleGet(
@@ -2053,6 +2651,778 @@ function sendJson(res, status, codeOrBody, message) {
   res.end(JSON.stringify(body));
 }
 
+// server/microsoft-app.ts
+import { randomUUID as randomUUID3 } from "node:crypto";
+
+// server/microsoft-api.ts
+var MicrosoftApiError = class extends Error {
+  code;
+  constructor(code) {
+    super(code);
+    this.code = code;
+  }
+};
+var ITEM_ID = /^[A-Za-z0-9!_.-]{1,200}$/;
+var GRAPH = "https://graph.microsoft.com/v1.0";
+async function previewMicrosoftProduct(product, accessToken, fetchImpl) {
+  switch (product.id) {
+    case "outlook-mail":
+      return previewMail(accessToken, fetchImpl);
+    case "outlook-calendar":
+      return previewCalendar2(accessToken, fetchImpl);
+    case "contacts":
+      return previewContacts(accessToken, fetchImpl);
+    case "teams":
+      return previewTeams(accessToken, fetchImpl);
+    case "onedrive":
+      return previewDriveChildren(accessToken, fetchImpl);
+    case "sharepoint":
+      return previewSites(accessToken, fetchImpl);
+    case "word":
+      return previewSearch(accessToken, fetchImpl, "docx", "Word documents");
+    case "excel":
+      return previewExcel(accessToken, fetchImpl);
+    case "powerpoint":
+      return previewSearch(accessToken, fetchImpl, "pptx", "PowerPoint presentations");
+    case "onenote":
+      return previewNotebooks(accessToken, fetchImpl);
+    case "todo":
+      return previewTodo(accessToken, fetchImpl);
+    case "planner":
+      return previewPlanner(accessToken, fetchImpl);
+    case "teams-meetings":
+    case "bookings":
+    case "forms":
+    case "power-bi":
+    case "dynamics":
+    case "arm":
+    case "devops":
+    case "power-platform":
+      throw new MicrosoftApiError("provider_error");
+    default: {
+      const unknown = product.id;
+      return unknown;
+    }
+  }
+}
+async function previewMail(token, fetchImpl) {
+  const body = await graphGet(
+    `${GRAPH}/me/messages?$top=5&$select=id,subject,from,receivedDateTime`,
+    token,
+    fetchImpl
+  );
+  const records = values(body).flatMap((item) => {
+    const row = record2(item);
+    const id = text2(row?.id);
+    if (!id) return [];
+    const from = record2(record2(row?.from)?.emailAddress);
+    return [{
+      id,
+      title: text2(row?.subject) || "Message",
+      detail: [text2(from?.address), text2(row?.receivedDateTime)].filter(Boolean).join(" \xB7 ")
+    }];
+  });
+  return [{ title: "Messages", records }];
+}
+async function previewCalendar2(token, fetchImpl) {
+  const body = await graphGet(
+    `${GRAPH}/me/events?$top=5&$select=id,subject,start,organizer&$orderby=start/dateTime`,
+    token,
+    fetchImpl
+  );
+  const records = values(body).flatMap((item) => {
+    const row = record2(item);
+    const id = text2(row?.id);
+    if (!id) return [];
+    const organizer = record2(record2(row?.organizer)?.emailAddress);
+    return [{
+      id,
+      title: text2(row?.subject) || "Event",
+      detail: [text2(record2(row?.start)?.dateTime), text2(organizer?.address)].filter(Boolean).join(" \xB7 ")
+    }];
+  });
+  return [{ title: "Events", records }];
+}
+async function previewContacts(token, fetchImpl) {
+  const body = await graphGet(
+    `${GRAPH}/me/contacts?$top=5&$select=id,displayName,emailAddresses`,
+    token,
+    fetchImpl
+  );
+  const records = values(body).flatMap((item) => {
+    const row = record2(item);
+    const id = text2(row?.id);
+    if (!id) return [];
+    const email = record2(arrayOf2(row?.emailAddresses)[0]);
+    return [{ id, title: text2(row?.displayName) || "Contact", detail: text2(email?.address) }];
+  });
+  return [{ title: "Contacts", records }];
+}
+async function previewTeams(token, fetchImpl) {
+  const body = await graphGet(`${GRAPH}/me/joinedTeams`, token, fetchImpl);
+  const records = values(body).flatMap((item) => {
+    const row = record2(item);
+    const id = text2(row?.id);
+    if (!id) return [];
+    return [{ id, title: text2(row?.displayName) || "Team", detail: text2(row?.description) }];
+  });
+  return [{ title: "Teams", records }];
+}
+async function previewDriveChildren(token, fetchImpl) {
+  const body = await graphGet(
+    `${GRAPH}/me/drive/root/children?$top=5&$select=id,name,folder,lastModifiedDateTime`,
+    token,
+    fetchImpl
+  );
+  return [{ title: "Files", records: driveRecords(body) }];
+}
+async function previewSites(token, fetchImpl) {
+  const body = await graphGet(`${GRAPH}/me/followedSites?$top=5`, token, fetchImpl);
+  const records = values(body).flatMap((item) => {
+    const row = record2(item);
+    const id = text2(row?.id);
+    if (!id) return [];
+    return [{ id, title: text2(row?.displayName) || "Site", detail: text2(row?.name) }];
+  });
+  return [{ title: "Followed sites", records }];
+}
+async function previewSearch(token, fetchImpl, query, title) {
+  const body = await graphGet(
+    `${GRAPH}/me/drive/root/search(q='${query}')?$top=5&$select=id,name,lastModifiedDateTime`,
+    token,
+    fetchImpl
+  );
+  return [{ title, records: driveRecords(body) }];
+}
+async function previewExcel(token, fetchImpl) {
+  const found = await graphGet(
+    `${GRAPH}/me/drive/root/search(q='xlsx')?$top=1&$select=id,name`,
+    token,
+    fetchImpl
+  );
+  const file = record2(values(found)[0]);
+  const id = text2(file?.id);
+  if (!id || !ITEM_ID.test(id)) return [{ title: "Workbook", records: [] }];
+  const sheets = await graphGet(
+    `${GRAPH}/me/drive/items/${encodeURIComponent(id)}/workbook/worksheets?$top=1&$select=name`,
+    token,
+    fetchImpl
+  );
+  const sheetName = text2(record2(values(sheets)[0])?.name);
+  if (!sheetName || /['()]/.test(sheetName)) {
+    return [{ title: "Workbook", records: [{ id, title: text2(file?.name) || "Workbook", detail: "" }] }];
+  }
+  const range = await graphGet(
+    `${GRAPH}/me/drive/items/${encodeURIComponent(id)}/workbook/worksheets('${encodeURIComponent(sheetName)}')/range(address='A1:E5')?$select=values`,
+    token,
+    fetchImpl
+  );
+  const valuesGrid = arrayOf2(record2(range)?.values);
+  const preview3 = valuesGrid.slice(0, 5).map((row) => arrayOf2(row).slice(0, 5).map((cell) => text2(cell) || (typeof cell === "number" ? String(cell) : "")).filter(Boolean).join(" | ")).filter(Boolean).join(" \xB7 ");
+  return [{
+    title: "Workbook",
+    records: [{ id, title: text2(file?.name) || "Workbook", detail: preview3 }]
+  }];
+}
+async function previewNotebooks(token, fetchImpl) {
+  const body = await graphGet(`${GRAPH}/me/onenote/notebooks?$top=5&$select=id,displayName`, token, fetchImpl);
+  const records = values(body).flatMap((item) => {
+    const row = record2(item);
+    const id = text2(row?.id);
+    if (!id) return [];
+    return [{ id, title: text2(row?.displayName) || "Notebook", detail: "" }];
+  });
+  return [{ title: "Notebooks", records }];
+}
+async function previewTodo(token, fetchImpl) {
+  const lists = await graphGet(`${GRAPH}/me/todo/lists?$top=5&$select=id,displayName`, token, fetchImpl);
+  const records = [];
+  for (const item of values(lists).slice(0, 5)) {
+    const row = record2(item);
+    const id = text2(row?.id);
+    if (!id || !ITEM_ID.test(id)) continue;
+    records.push({ id, title: text2(row?.displayName) || "List", detail: "" });
+  }
+  const first = records[0];
+  if (!first) return [{ title: "To Do", records }];
+  const tasks = await graphGet(
+    `${GRAPH}/me/todo/lists/${encodeURIComponent(first.id)}/tasks?$top=5&$select=id,title,status`,
+    token,
+    fetchImpl
+  );
+  const taskRecords = values(tasks).flatMap((item) => {
+    const row = record2(item);
+    const id = text2(row?.id);
+    if (!id) return [];
+    return [{ id, title: text2(row?.title) || "Task", detail: text2(row?.status) }];
+  });
+  return [{ title: "Lists", records }, { title: "Tasks", records: taskRecords }];
+}
+async function previewPlanner(token, fetchImpl) {
+  const body = await graphGet(`${GRAPH}/me/planner/tasks`, token, fetchImpl);
+  const records = values(body).slice(0, 5).flatMap((item) => {
+    const row = record2(item);
+    const id = text2(row?.id);
+    if (!id) return [];
+    return [{ id, title: text2(row?.title) || "Task", detail: text2(row?.percentComplete) }];
+  });
+  return [{ title: "Assigned tasks", records }];
+}
+function driveRecords(body) {
+  return values(body).flatMap((item) => {
+    const row = record2(item);
+    const id = text2(row?.id);
+    if (!id) return [];
+    return [{
+      id,
+      title: text2(row?.name) || "File",
+      detail: row?.folder ? "Folder" : text2(row?.lastModifiedDateTime)
+    }];
+  });
+}
+async function graphGet(url, token, fetchImpl) {
+  let attempt = 0;
+  while (attempt < 2) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15e3);
+    try {
+      const response = await fetchImpl(url, {
+        headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+        signal: controller.signal
+      });
+      if ((response.status === 429 || response.status === 503) && attempt === 0) {
+        attempt += 1;
+        await delay2(200);
+        continue;
+      }
+      const body = await response.json().catch(() => null);
+      if (response.ok) return body;
+      throw mappedError2(response.status, body);
+    } catch (error) {
+      if (error instanceof MicrosoftApiError) throw error;
+      if (attempt === 0) {
+        attempt += 1;
+        continue;
+      }
+      throw new MicrosoftApiError("provider_unavailable");
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  throw new MicrosoftApiError("provider_unavailable");
+}
+function mappedError2(status, body) {
+  const code = text2(record2(record2(body)?.error)?.code);
+  if (status === 401 || code === "InvalidAuthenticationToken") return new MicrosoftApiError("reconnect_required");
+  if (status === 403 || code === "ErrorAccessDenied" || code === "Authorization_RequestDenied") {
+    return new MicrosoftApiError("missing_scope");
+  }
+  if (status === 429) return new MicrosoftApiError("rate_limited");
+  if (status === 503) return new MicrosoftApiError("provider_unavailable");
+  return new MicrosoftApiError("provider_error");
+}
+function delay2(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+function values(body) {
+  return arrayOf2(record2(body)?.value);
+}
+function record2(value) {
+  return value && typeof value === "object" ? value : null;
+}
+function arrayOf2(value) {
+  return Array.isArray(value) ? value : [];
+}
+function text2(value) {
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return typeof value === "string" ? value : "";
+}
+
+// server/microsoft-oauth.ts
+function createMicrosoftOAuth(settings, fetchImpl = fetch) {
+  const tokenUrl = `https://login.microsoftonline.com/${encodeURIComponent(settings.tenant)}/oauth2/v2.0/token`;
+  return {
+    authorizationUrl(input) {
+      const url = new URL(`https://login.microsoftonline.com/${encodeURIComponent(settings.tenant)}/oauth2/v2.0/authorize`);
+      url.searchParams.set("client_id", settings.clientId);
+      url.searchParams.set("response_type", "code");
+      url.searchParams.set("redirect_uri", settings.redirectUri);
+      url.searchParams.set("response_mode", "query");
+      url.searchParams.set("scope", input.scopes.join(" "));
+      url.searchParams.set("state", input.state);
+      url.searchParams.set("prompt", "consent");
+      return url.toString();
+    },
+    async exchange(code) {
+      return tokenSet2(await tokenRequest(fetchImpl, tokenUrl, {
+        client_id: settings.clientId,
+        client_secret: settings.clientSecret,
+        grant_type: "authorization_code",
+        code,
+        redirect_uri: settings.redirectUri
+      }));
+    },
+    async refresh(refreshToken, scopes) {
+      const next = tokenSet2(await tokenRequest(fetchImpl, tokenUrl, {
+        client_id: settings.clientId,
+        client_secret: settings.clientSecret,
+        grant_type: "refresh_token",
+        refresh_token: refreshToken,
+        scope: scopes.join(" ")
+      }));
+      return { ...next, refreshToken: next.refreshToken ?? refreshToken };
+    },
+    async identity(accessToken) {
+      const response = await fetchImpl("https://graph.microsoft.com/v1.0/me?$select=id,mail,userPrincipalName", {
+        headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" }
+      });
+      if (!response.ok) return null;
+      const body = await response.json().catch(() => null);
+      if (!body || typeof body !== "object") return null;
+      const record4 = body;
+      const oid = typeof record4.id === "string" ? record4.id : "";
+      const email = typeof record4.mail === "string" && record4.mail.includes("@") ? record4.mail : typeof record4.userPrincipalName === "string" ? record4.userPrincipalName : "";
+      if (!oid || !email) return null;
+      return { oid, email };
+    }
+  };
+}
+async function tokenRequest(fetchImpl, url, fields) {
+  const response = await fetchImpl(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
+    body: new URLSearchParams(fields).toString()
+  });
+  const body = await response.json().catch(() => null);
+  if (!response.ok || !body || typeof body !== "object") {
+    throw new Error("token_exchange_failed");
+  }
+  return body;
+}
+function tokenSet2(body) {
+  const accessToken = typeof body.access_token === "string" ? body.access_token : "";
+  if (!accessToken) throw new Error("token_exchange_failed");
+  const expiresIn = typeof body.expires_in === "number" ? body.expires_in : Number(body.expires_in);
+  return {
+    accessToken,
+    refreshToken: typeof body.refresh_token === "string" ? body.refresh_token : null,
+    expiresIn: Number.isFinite(expiresIn) && expiresIn > 0 ? expiresIn : 3600,
+    scope: typeof body.scope === "string" ? body.scope : ""
+  };
+}
+
+// server/microsoft-app.ts
+var STATE_PATTERN2 = /^[A-Za-z0-9_-]{43}$/;
+var CODE_PATTERN2 = /^[A-Za-z0-9._~%-]{1,2048}$/;
+var OID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+var EMAIL_PATTERN2 = /^[^\s@]+@[^\s@]+$/;
+var ACCESS_REFRESH_SKEW_MS2 = 6e4;
+var MESSAGES2 = {
+  configuration: "Microsoft sign-in is not configured.",
+  unavailable: "This Microsoft product is not available to connect.",
+  not_connected: "This Microsoft product is not connected.",
+  rate_limited: "Microsoft rate limit reached. Try again shortly.",
+  missing_scope: "Microsoft did not grant the requested access. Reconnect and allow that permission.",
+  reconnect_required: "The Microsoft connection expired. Reconnect this product.",
+  provider_unavailable: "Microsoft could not be reached. No data was changed.",
+  provider_error: "Microsoft could not complete the request.",
+  server_error: "The request could not be completed.",
+  persistence_unavailable: "Production token storage is not configured. Set DATABASE_URL before connecting Microsoft.",
+  forbidden: "The request was rejected."
+};
+async function handleMicrosoftRequest(req, res, deps) {
+  const path = (req.url ?? "/").split("?")[0] ?? "/";
+  const method = req.method ?? "GET";
+  const microsoftConfig = configOf2(deps);
+  if (path === "/api/integrations/microsoft/callback" && method === "GET") {
+    await callback2(req, res, deps, microsoftConfig);
+    return;
+  }
+  if (path === "/api/integrations/microsoft" && method === "GET") {
+    await sendCatalog2(req, res, deps, microsoftConfig);
+    return;
+  }
+  const route = path.match(/^\/api\/integrations\/microsoft\/([a-z0-9-]+)\/(connect|disconnect|preview)$/);
+  if (!route) {
+    sendJson2(res, 404, "server_error");
+    return;
+  }
+  const productId = route[1] ?? "";
+  const action = route[2];
+  if (action === "connect" && method === "GET") {
+    await startConnect2(req, res, deps, microsoftConfig, productId);
+    return;
+  }
+  if (action === "disconnect" && method === "POST") {
+    await disconnect2(req, res, deps, productId);
+    return;
+  }
+  if (action === "preview" && method === "GET") {
+    await preview2(req, res, deps, productId);
+    return;
+  }
+  sendJson2(res, 405, "server_error");
+}
+async function sendCatalog2(req, res, deps, microsoftConfig) {
+  const active = await resolveSession2(req, deps);
+  const connections = active ? await deps.store.listMicrosoftConnections(active.session.id) : [];
+  const visible = microsoftConfig.status === "ready" ? visibleMicrosoftProducts(microsoftConfig.settings.confirmedProducts) : [];
+  const visibleIds = new Set(visible.map((product) => product.id));
+  const products = visible.map((product) => publicProduct2(product, connections, true));
+  const retained = connections.filter((connection) => !visibleIds.has(connection.product)).flatMap((connection) => {
+    const product = microsoftProductById(connection.product);
+    if (!product) return [];
+    return [publicProduct2(product, connections, false)];
+  });
+  sendJson2(res, 200, { products: [...products, ...retained] });
+}
+async function startConnect2(req, res, deps, microsoftConfig, productId) {
+  if (!persistenceReady2(deps)) {
+    sendJson2(res, 503, "persistence_unavailable");
+    return;
+  }
+  if (microsoftConfig.status !== "ready") {
+    sendJson2(res, 503, "configuration", microsoftConfig.message);
+    return;
+  }
+  const product = microsoftProductById(productId);
+  const visible = visibleMicrosoftProducts(microsoftConfig.settings.confirmedProducts);
+  if (!product || !visible.some((item) => item.id === product.id)) {
+    sendJson2(res, 409, "unavailable");
+    return;
+  }
+  if (limited2(req, deps, `microsoft-connect:${product.id}`, 20, 10 * 6e4)) {
+    sendJson2(res, 429, "rate_limited");
+    return;
+  }
+  const now = clock2(deps);
+  const existing = await resolveSession2(req, deps);
+  let session = existing?.session ?? null;
+  let cookie = existing?.cookie ?? null;
+  if (!session) {
+    session = newSession2(now);
+    await deps.store.createSession(session);
+    cookie = cookieFor2(session, deps, now);
+  }
+  const state = createOauthState();
+  await deps.store.saveOauthState(state, session.id, now + OAUTH_STATE_TTL_MS, `microsoft:${product.id}`);
+  const location = oauthFor2(deps, microsoftConfig.settings).authorizationUrl({
+    state,
+    scopes: requestedScopes2(product)
+  });
+  redirect2(res, location, cookie);
+}
+async function callback2(req, res, deps, microsoftConfig) {
+  const params = new URL(req.url ?? "/", "http://localhost").searchParams;
+  const errorParam = bounded2(params.get("error"), 64);
+  const state = bounded2(params.get("state"), 128);
+  const active = await resolveSession2(req, deps);
+  if (errorParam) {
+    await consumeIfValid2(deps, state, active?.session.id ?? null);
+    redirect2(res, errorLocation2(errorParam === "access_denied" ? "access_denied" : "provider_error"));
+    return;
+  }
+  if (!active || !state || !STATE_PATTERN2.test(state)) {
+    redirect2(res, errorLocation2("invalid_state"));
+    return;
+  }
+  const code = bounded2(params.get("code"), 2048);
+  if (!code || !CODE_PATTERN2.test(code)) {
+    await consumeIfValid2(deps, state, active.session.id);
+    redirect2(res, errorLocation2("missing_code"));
+    return;
+  }
+  if (microsoftConfig.status !== "ready") {
+    await consumeIfValid2(deps, state, active.session.id);
+    redirect2(res, errorLocation2("provider_error"));
+    return;
+  }
+  const productKey = await deps.store.consumeOauthState(state, active.session.id, clock2(deps));
+  const productId = productKey?.startsWith("microsoft:") ? productKey.slice("microsoft:".length) : "";
+  const product = microsoftProductById(productId);
+  const visible = visibleMicrosoftProducts(microsoftConfig.settings.confirmedProducts);
+  if (!product || !visible.some((item) => item.id === product.id)) {
+    redirect2(res, errorLocation2("invalid_state"));
+    return;
+  }
+  try {
+    const oauth = oauthFor2(deps, microsoftConfig.settings);
+    const tokens = await oauth.exchange(code);
+    if (!tokens.refreshToken) {
+      redirect2(res, errorLocation2("missing_refresh_token"));
+      return;
+    }
+    const identity = await oauth.identity(tokens.accessToken);
+    if (!identity || !OID_PATTERN.test(identity.oid) || !validEmail2(identity.email)) {
+      redirect2(res, errorLocation2("invalid_account"));
+      return;
+    }
+    if (!scopesGranted2(tokens.scope, product.scopes.map((item) => item.scope))) {
+      redirect2(res, errorLocation2("missing_scope"));
+      return;
+    }
+    const now = clock2(deps);
+    const next = newSession2(now);
+    next.userId = active.session.userId;
+    const rotated = await deps.store.rotateSession(active.session.id, now, next);
+    if (!rotated) {
+      redirect2(res, errorLocation2("provider_error"));
+      return;
+    }
+    await storeGrant2(deps, rotated, identity, tokens, product, now);
+    redirect2(
+      res,
+      `/?${new URLSearchParams({ microsoft: "connected", product: product.id }).toString()}`,
+      cookieFor2(rotated, deps, now)
+    );
+  } catch (error) {
+    logger2(deps, error instanceof Error && error.message === "token_exchange_failed" ? "token_exchange_failed" : "provider_error");
+    redirect2(res, errorLocation2("token_exchange_failed"));
+  }
+}
+async function preview2(req, res, deps, productId) {
+  const product = microsoftProductById(productId);
+  if (!product || product.availability !== "confirmable") {
+    sendJson2(res, 404, "server_error");
+    return;
+  }
+  const active = await resolveSession2(req, deps);
+  if (!active) {
+    sendJson2(res, 200, { connected: false, sections: [] });
+    return;
+  }
+  const connection = (await deps.store.listMicrosoftConnections(active.session.id)).find((item) => item.product === product.id);
+  if (!connection) {
+    sendJson2(res, 409, "not_connected");
+    return;
+  }
+  if (!scopesGranted2(connection.grantedScopes, product.scopes.map((item) => item.scope))) {
+    sendJson2(res, 403, "missing_scope");
+    return;
+  }
+  try {
+    const accessToken = await freshAccessToken2(deps, connection, product);
+    const sections = await previewMicrosoftProduct(product, accessToken, deps.fetchImpl ?? fetch);
+    sendJson2(res, 200, { connected: true, sections });
+  } catch (error) {
+    const code = error instanceof MicrosoftApiError ? error.code : "provider_error";
+    if (code === "reconnect_required") {
+      await deps.store.deleteMicrosoftGrant(connection.sessionId, connection.grantId);
+    }
+    sendJson2(res, code === "rate_limited" ? 429 : code === "missing_scope" ? 403 : 502, code);
+  }
+}
+async function disconnect2(req, res, deps, productId) {
+  if (req.headers["x-em-request"] !== "1") {
+    sendJson2(res, 403, "forbidden");
+    return;
+  }
+  const active = await resolveSession2(req, deps);
+  if (!active) {
+    sendJson2(res, 200, { disconnected: false, grantRevoked: false, sharedGrant: false });
+    return;
+  }
+  const connections = await deps.store.listMicrosoftConnections(active.session.id);
+  const connection = connections.find((item) => item.product === productId);
+  if (!connection) {
+    sendJson2(res, 200, { disconnected: false, grantRevoked: false, sharedGrant: false });
+    return;
+  }
+  const sharedGrant = connections.some((item) => item.grantId === connection.grantId && item.product !== productId);
+  await deps.store.deleteMicrosoftConnection(active.session.id, productId);
+  if (!sharedGrant) await deps.store.deleteMicrosoftGrant(active.session.id, connection.grantId);
+  sendJson2(res, 200, { disconnected: true, grantRevoked: false, sharedGrant });
+}
+async function storeGrant2(deps, session, identity, tokens, product, now) {
+  const previous = (await deps.store.listMicrosoftConnections(session.id)).find((item) => item.product === product.id);
+  const existing = await deps.store.getMicrosoftGrant(session.id, identity.oid);
+  const grantId = existing?.id ?? randomUUID3();
+  const grant = {
+    id: grantId,
+    sessionId: session.id,
+    userId: session.userId,
+    microsoftOid: identity.oid,
+    email: identity.email,
+    accessToken: encryptString(tokens.accessToken, deps.config.tokenEncryptionKey, grantId),
+    refreshToken: encryptString(tokens.refreshToken ?? "", deps.config.tokenEncryptionKey, grantId),
+    accessTokenExpiresAt: now + tokens.expiresIn * 1e3,
+    grantedScopes: tokens.scope,
+    refreshedAt: now,
+    createdAt: existing?.createdAt ?? now,
+    updatedAt: now
+  };
+  if (existing) await deps.store.updateMicrosoftGrant(grant);
+  else await deps.store.insertMicrosoftGrant(grant);
+  await deps.store.upsertMicrosoftConnection({
+    id: randomUUID3(),
+    grantId,
+    sessionId: session.id,
+    product: product.id,
+    scopes: product.scopes.map((item) => item.scope).join(" "),
+    createdAt: now,
+    updatedAt: now
+  });
+  if (!previous || previous.grantId === grantId) return;
+  const stillUsed = (await deps.store.listMicrosoftConnections(session.id)).some((item) => item.grantId === previous.grantId);
+  if (stillUsed) return;
+  await deps.store.deleteMicrosoftGrant(session.id, previous.grantId);
+}
+async function freshAccessToken2(deps, connection, product) {
+  const current = decrypt2(connection.accessToken, deps, connection.grantId);
+  if (current && connection.accessTokenExpiresAt > clock2(deps) + ACCESS_REFRESH_SKEW_MS2) return current;
+  const refreshToken = decrypt2(connection.refreshToken, deps, connection.grantId);
+  if (!refreshToken) throw new MicrosoftApiError("reconnect_required");
+  const settings = readySettings2(deps);
+  if (!settings) throw new MicrosoftApiError("reconnect_required");
+  try {
+    const next = await oauthFor2(deps, settings).refresh(refreshToken, requestedScopes2(product));
+    const now = clock2(deps);
+    await deps.store.updateMicrosoftGrant({
+      id: connection.grantId,
+      sessionId: connection.sessionId,
+      userId: connection.userId,
+      microsoftOid: connection.microsoftOid,
+      email: connection.email,
+      accessToken: encryptString(next.accessToken, deps.config.tokenEncryptionKey, connection.grantId),
+      refreshToken: encryptString(next.refreshToken ?? refreshToken, deps.config.tokenEncryptionKey, connection.grantId),
+      accessTokenExpiresAt: now + next.expiresIn * 1e3,
+      grantedScopes: next.scope || connection.grantedScopes,
+      refreshedAt: now,
+      createdAt: connection.createdAt,
+      updatedAt: now
+    });
+    return next.accessToken;
+  } catch {
+    throw new MicrosoftApiError("reconnect_required");
+  }
+}
+function configOf2(deps) {
+  return deps.microsoftConfig ?? {
+    status: "absent",
+    message: "MICROSOFT_CLIENT_ID is missing. Set the Microsoft Entra app in the server environment."
+  };
+}
+function readySettings2(deps) {
+  const microsoftConfig = configOf2(deps);
+  return microsoftConfig.status === "ready" ? microsoftConfig.settings : null;
+}
+function oauthFor2(deps, settings) {
+  return deps.microsoftOAuth ?? createMicrosoftOAuth(settings, deps.fetchImpl ?? fetch);
+}
+function publicProduct2(product, connections, connectable) {
+  const connection = connections.find((item) => item.product === product.id);
+  return {
+    id: product.id,
+    cardId: `em-microsoft-${product.id}`,
+    name: product.name,
+    description: product.description,
+    category: product.category,
+    initials: product.initials,
+    icon: product.icon,
+    docsUrl: product.docsUrl,
+    connected: Boolean(connection),
+    connectable,
+    email: connection?.email ?? null,
+    scopes: product.scopes.map((item) => item.scope),
+    adminConsent: product.adminConsent
+  };
+}
+function scopesGranted2(granted, required2) {
+  const have = /* @__PURE__ */ new Set();
+  for (const part of granted.split(/\s+/)) {
+    if (!part) continue;
+    have.add(part);
+    const name = part.split("/").pop();
+    if (name) have.add(name);
+  }
+  return required2.every((scope) => have.has(scope) || have.has(scope.split("/").pop() ?? scope));
+}
+function validEmail2(email) {
+  return email.length <= 320 && EMAIL_PATTERN2.test(email);
+}
+async function consumeIfValid2(deps, state, sessionId) {
+  if (!state || !sessionId || !STATE_PATTERN2.test(state)) return;
+  await deps.store.consumeOauthState(state, sessionId, clock2(deps));
+}
+async function resolveSession2(req, deps) {
+  const now = clock2(deps);
+  const token = readCookie(req.headers.cookie, SESSION_COOKIE);
+  if (!token) return null;
+  const payload = verifySessionToken(token, deps.config.sessionSecret, now);
+  if (!payload) return null;
+  const session = await deps.store.getSession(payload.sid);
+  if (!session || session.expiresAt <= now || session.id !== payload.sid) return null;
+  return { session, cookie: null };
+}
+function newSession2(now) {
+  return {
+    id: createSessionId(),
+    createdAt: now,
+    expiresAt: now + SESSION_TTL_MS,
+    userId: null
+  };
+}
+function cookieFor2(session, deps, now) {
+  const token = signSession(
+    { sid: session.id, iat: session.createdAt, exp: session.expiresAt },
+    deps.config.sessionSecret
+  );
+  return serializeSessionCookie(token, {
+    production: deps.config.production,
+    maxAgeSeconds: Math.max(0, Math.floor((session.expiresAt - now) / 1e3))
+  });
+}
+function persistenceReady2(deps) {
+  if (process.env.VERCEL === "1" && !deps.config.databaseUrl) return false;
+  return true;
+}
+function decrypt2(secret, deps, aad) {
+  try {
+    const value = decryptString(secret, deps.config.tokenEncryptionKey, aad);
+    return value.length > 0 ? value : null;
+  } catch {
+    return null;
+  }
+}
+function clock2(deps) {
+  return deps.now ? deps.now() : Date.now();
+}
+function logger2(deps, event) {
+  deps.logger?.(event);
+}
+var buckets2 = /* @__PURE__ */ new Map();
+function limited2(req, deps, name, max, windowMs) {
+  const now = clock2(deps);
+  const key = `${name}:${req.socket?.remoteAddress ?? "local"}`;
+  const recent = (buckets2.get(key) ?? []).filter((stamp) => now - stamp < windowMs);
+  recent.push(now);
+  buckets2.set(key, recent);
+  return recent.length > max;
+}
+function bounded2(value, max) {
+  if (!value || value.length > max) return null;
+  return value;
+}
+function errorLocation2(reason) {
+  return `/?${new URLSearchParams({ microsoft: "error", reason }).toString()}`;
+}
+function redirect2(res, location, cookie) {
+  res.statusCode = 302;
+  if (cookie) res.setHeader("Set-Cookie", cookie);
+  res.setHeader("Location", location);
+  res.setHeader("Cache-Control", "no-store");
+  res.end();
+}
+function sendJson2(res, status, codeOrBody, message) {
+  const body = typeof codeOrBody === "string" ? { error: codeOrBody, message: message ?? MESSAGES2[codeOrBody] } : codeOrBody;
+  res.statusCode = status;
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  res.setHeader("Cache-Control", "no-store");
+  res.end(JSON.stringify(body));
+}
+
 // server/domains.ts
 var ACCOUNTS_ORIGINS = /* @__PURE__ */ new Set([
   "https://accounts.zoho.com",
@@ -2280,7 +3650,7 @@ async function fetchLeads(input, fetchImpl) {
     }
     throw new ZohoRequestError("provider_error", code);
   }
-  const data = record2(payload)?.data;
+  const data = record3(payload)?.data;
   if (!Array.isArray(data)) return [];
   const leads = [];
   for (const item of data) {
@@ -2307,7 +3677,7 @@ async function postToken(accountsOrigin, body, fetchImpl) {
   if (!response.ok || oauthError) {
     throw new ZohoRequestError("token_exchange_failed", oauthError);
   }
-  const fields = record2(payload);
+  const fields = record3(payload);
   const accessToken = stringField(fields, "access_token");
   const apiDomain = stringField(fields, "api_domain");
   const expiresIn = numberField(fields, "expires_in");
@@ -2328,15 +3698,15 @@ async function postToken(accountsOrigin, body, fetchImpl) {
   };
 }
 async function readJson(response) {
-  const text3 = await response.text();
-  if (!text3) return null;
+  const text4 = await response.text();
+  if (!text4) return null;
   try {
-    return JSON.parse(text3);
+    return JSON.parse(text4);
   } catch {
     return null;
   }
 }
-function record2(value) {
+function record3(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   return value;
 }
@@ -2349,17 +3719,17 @@ function numberField(value, key) {
   return typeof field === "number" && Number.isFinite(field) ? field : null;
 }
 function oauthCode(value) {
-  return safeCode(stringField(record2(value), "error"));
+  return safeCode(stringField(record3(value), "error"));
 }
 function crmCode(value) {
-  return safeCode(stringField(record2(value), "code"));
+  return safeCode(stringField(record3(value), "code"));
 }
 function safeCode(value) {
   if (!value || !/^[A-Za-z0-9_.-]{1,64}$/.test(value)) return null;
   return value;
 }
 function toLead(value) {
-  const fields = record2(value);
+  const fields = record3(value);
   const id = stringField(fields, "id");
   if (!fields || !id) return null;
   return {
@@ -2522,7 +3892,7 @@ async function calendarPreview(input, fetchImpl) {
   const calendars = await zohoGet(calendarsUrl, input.accessToken, fetchImpl);
   const listed = arrayField(calendars, "calendars").map((item) => asRecord(item)).filter((item) => item !== null);
   const chosen = listed.find((calendar) => calendar.isdefault === true) ?? listed[0] ?? null;
-  const uid = pathId(text2(chosen, "uid") ?? "");
+  const uid = pathId(text3(chosen, "uid") ?? "");
   const sections = [];
   if (uid) {
     const start = /* @__PURE__ */ new Date();
@@ -2589,11 +3959,11 @@ async function zohoGet(url, accessToken, fetchImpl, extraHeaders) {
     throw new ZohoRequestError("provider_unavailable");
   }
   if (response.status === 204) return null;
-  const text3 = await response.text();
+  const text4 = await response.text();
   let payload = null;
-  if (text3) {
+  if (text4) {
     try {
-      payload = JSON.parse(text3);
+      payload = JSON.parse(text4);
     } catch {
       payload = null;
     }
@@ -2615,10 +3985,10 @@ function readOrganizations(payload, listKey, idKey, nameKey) {
   const list = arrayField(payload, listKey);
   const organizations = [];
   for (const item of list) {
-    const record3 = asRecord(item);
-    const id = text2(record3, idKey);
+    const record4 = asRecord(item);
+    const id = text3(record4, idKey);
     if (!id) continue;
-    organizations.push({ id, name: text2(record3, nameKey) ?? id });
+    organizations.push({ id, name: text3(record4, nameKey) ?? id });
     if (organizations.length === 20) break;
   }
   return organizations;
@@ -2626,15 +3996,15 @@ function readOrganizations(payload, listKey, idKey, nameKey) {
 function mapRows(payload, listKey, idKey, titleKey, detailKey) {
   const records = [];
   for (const item of arrayField(payload, listKey)) {
-    const record3 = asRecord(item);
-    const id = text2(record3, idKey);
-    if (!record3 || !id) continue;
-    const detailValue = record3[detailKey];
+    const record4 = asRecord(item);
+    const id = text3(record4, idKey);
+    if (!record4 || !id) continue;
+    const detailValue = record4[detailKey];
     const detailRecord = asRecord(detailValue);
-    const detail = detailRecord ? text2(detailRecord, "start") ?? text2(detailRecord, "timezone") ?? "" : text2(record3, detailKey) ?? "";
+    const detail = detailRecord ? text3(detailRecord, "start") ?? text3(detailRecord, "timezone") ?? "" : text3(record4, detailKey) ?? "";
     records.push({
       id,
-      title: text2(record3, titleKey) ?? "Untitled",
+      title: text3(record4, titleKey) ?? "Untitled",
       detail
     });
     if (records.length === PAGE_SIZE) break;
@@ -2647,14 +4017,14 @@ function peopleRecords(payload) {
   const rows = Array.isArray(result) ? result : [];
   const records = [];
   for (const row of rows) {
-    const record3 = asRecord(row);
-    if (!record3) continue;
-    const first = Object.values(record3)[0];
+    const record4 = asRecord(row);
+    if (!record4) continue;
+    const first = Object.values(record4)[0];
     const fields = Array.isArray(first) ? asRecord(first[0]) : asRecord(first);
-    const id = text2(fields, "Zoho_ID") ?? text2(fields, "recordId") ?? text2(record3, "recordId");
+    const id = text3(fields, "Zoho_ID") ?? text3(fields, "recordId") ?? text3(record4, "recordId");
     if (!id) continue;
-    const title = [text2(fields, "FirstName"), text2(fields, "LastName")].filter(Boolean).join(" ") || text2(fields, "EmployeeID") || "Employee";
-    records.push({ id, title, detail: text2(fields, "EmailID") ?? "" });
+    const title = [text3(fields, "FirstName"), text3(fields, "LastName")].filter(Boolean).join(" ") || text3(fields, "EmployeeID") || "Employee";
+    records.push({ id, title, detail: text3(fields, "EmailID") ?? "" });
     if (records.length === PAGE_SIZE) break;
   }
   return records;
@@ -2667,8 +4037,8 @@ function asRecord(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   return value;
 }
-function text2(record3, key) {
-  const value = record3?.[key];
+function text3(record4, key) {
+  const value = record4?.[key];
   if (typeof value === "string" && value.length > 0) return value;
   if (typeof value === "number" && Number.isFinite(value)) return String(value);
   return null;
@@ -2869,9 +4239,9 @@ function zohoProductById(id) {
 }
 
 // server/app.ts
-var ACCESS_REFRESH_SKEW_MS2 = 6e4;
-var STATE_PATTERN2 = /^[A-Za-z0-9_-]{43}$/;
-var CODE_PATTERN2 = /^[A-Za-z0-9._~-]{1,1024}$/;
+var ACCESS_REFRESH_SKEW_MS3 = 6e4;
+var STATE_PATTERN3 = /^[A-Za-z0-9_-]{43}$/;
+var CODE_PATTERN3 = /^[A-Za-z0-9._~-]{1,1024}$/;
 var IDENTITY = "local-browser-session";
 var PUBLIC_MESSAGES = {
   not_connected: "This Zoho product is not connected.",
@@ -2890,7 +4260,7 @@ var rateBuckets = /* @__PURE__ */ new Map();
 async function handleZohoRequest(req, res, deps) {
   const body = await readBody(req);
   if (body === null) {
-    sendJson2(res, 413, publicError("server_error"));
+    sendJson3(res, 413, publicError("server_error"));
     return;
   }
   const path = requestPath(req.url);
@@ -2949,7 +4319,7 @@ async function handleZohoRequest(req, res, deps) {
       await handleOrganization(req, res, deps, product, body);
       return;
     }
-    sendJson2(res, 405, publicError("server_error"));
+    sendJson3(res, 405, publicError("server_error"));
     return;
   }
   const statusRoute = path.match(/^\/api\/integrations\/([a-z0-9-]+)\/status$/);
@@ -2961,38 +4331,42 @@ async function handleZohoRequest(req, res, deps) {
     await handleGoogleRequest(req, res, deps);
     return;
   }
-  if (path.startsWith("/api/integrations/zoho/")) {
-    sendJson2(res, 405, publicError("server_error"));
+  if (path.startsWith("/api/integrations/microsoft")) {
+    await handleMicrosoftRequest(req, res, deps);
     return;
   }
-  sendJson2(res, 404, publicError("server_error"));
+  if (path.startsWith("/api/integrations/zoho/")) {
+    sendJson3(res, 405, publicError("server_error"));
+    return;
+  }
+  sendJson3(res, 404, publicError("server_error"));
 }
 async function handleConnect(req, res, deps, productId) {
   const product = zohoProductById(productId);
   if (!product) {
-    sendJson2(res, 404, publicError("server_error"));
+    sendJson3(res, 404, publicError("server_error"));
     return;
   }
   if (product.availability !== "available") {
-    sendJson2(res, 409, publicError("planned"));
+    sendJson3(res, 409, publicError("planned"));
     return;
   }
-  if (!persistenceReady2(deps)) {
-    sendJson2(res, 503, publicError("persistence_unavailable"));
+  if (!persistenceReady3(deps)) {
+    sendJson3(res, 503, publicError("persistence_unavailable"));
     return;
   }
-  if (limited2(req, deps, "connect", 20, 10 * 6e4)) {
-    sendJson2(res, 429, publicError("rate_limited"));
+  if (limited3(req, deps, "connect", 20, 10 * 6e4)) {
+    sendJson3(res, 429, publicError("rate_limited"));
     return;
   }
-  const now = clock2(deps);
-  const existing = await resolveSession2(req, deps, false);
+  const now = clock3(deps);
+  const existing = await resolveSession3(req, deps, false);
   let session = existing?.session ?? null;
   let cookie = existing?.cookie ?? null;
   if (!session) {
-    session = newSession2(now, null);
+    session = newSession3(now, null);
     await deps.store.createSession(session);
-    cookie = cookieFor2(session, deps, now);
+    cookie = cookieFor3(session, deps, now);
   }
   const state = createOauthState();
   await deps.store.saveOauthState(state, session.id, now + OAUTH_STATE_TTL_MS, product.id);
@@ -3002,36 +4376,36 @@ async function handleConnect(req, res, deps, productId) {
     state,
     scope: product.scopes.join(",")
   });
-  redirect2(res, location, cookie);
+  redirect3(res, location, cookie);
 }
 async function handleCallback(req, res, deps) {
   const params = requestParams(req.url);
-  const errorParam = bounded2(params.get("error"), 64);
-  const state = bounded2(params.get("state"), 128);
-  const active = await resolveSession2(req, deps, false);
+  const errorParam = bounded3(params.get("error"), 64);
+  const state = bounded3(params.get("state"), 128);
+  const active = await resolveSession3(req, deps, false);
   if (errorParam) {
-    await consumeIfValid2(deps, state, active?.session.id ?? null);
-    redirect2(
+    await consumeIfValid3(deps, state, active?.session.id ?? null);
+    redirect3(
       res,
-      errorLocation2(errorParam === "access_denied" ? "access_denied" : "provider_error")
+      errorLocation3(errorParam === "access_denied" ? "access_denied" : "provider_error")
     );
     return;
   }
   if (!active) {
-    redirect2(res, errorLocation2("invalid_state"));
+    redirect3(res, errorLocation3("invalid_state"));
     return;
   }
-  if (!state || !STATE_PATTERN2.test(state)) {
-    redirect2(res, errorLocation2("invalid_state"));
+  if (!state || !STATE_PATTERN3.test(state)) {
+    redirect3(res, errorLocation3("invalid_state"));
     return;
   }
-  const code = bounded2(params.get("code"), 1024);
-  if (!code || !CODE_PATTERN2.test(code)) {
-    await consumeIfValid2(deps, state, active.session.id);
-    redirect2(res, errorLocation2("missing_code"));
+  const code = bounded3(params.get("code"), 1024);
+  if (!code || !CODE_PATTERN3.test(code)) {
+    await consumeIfValid3(deps, state, active.session.id);
+    redirect3(res, errorLocation3("missing_code"));
     return;
   }
-  const accountsServer = bounded2(params.get("accounts-server"), 200);
+  const accountsServer = bounded3(params.get("accounts-server"), 200);
   let accountsOrigin;
   try {
     accountsOrigin = accountsServer ? assertAccountsOrigin(accountsServer) : "";
@@ -3039,14 +4413,14 @@ async function handleCallback(req, res, deps) {
     accountsOrigin = "";
   }
   if (!accountsOrigin) {
-    await consumeIfValid2(deps, state, active.session.id);
-    redirect2(res, errorLocation2("invalid_accounts_server"));
+    await consumeIfValid3(deps, state, active.session.id);
+    redirect3(res, errorLocation3("invalid_accounts_server"));
     return;
   }
-  const productId = await deps.store.consumeOauthState(state, active.session.id, clock2(deps));
+  const productId = await deps.store.consumeOauthState(state, active.session.id, clock3(deps));
   const product = productId ? zohoProductById(productId) : null;
   if (!product || product.availability !== "available") {
-    redirect2(res, errorLocation2("invalid_state"));
+    redirect3(res, errorLocation3("invalid_state"));
     return;
   }
   try {
@@ -3061,17 +4435,17 @@ async function handleCallback(req, res, deps) {
       fetchOf(deps)
     );
     if (!tokens.refreshToken) {
-      redirect2(res, errorLocation2("missing_refresh_token"));
+      redirect3(res, errorLocation3("missing_refresh_token"));
       return;
     }
-    const now = clock2(deps);
-    const next = newSession2(now, active.session.userId);
+    const now = clock3(deps);
+    const next = newSession3(now, active.session.userId);
     const rotated = await deps.store.rotateSession(active.session.id, now, next);
     if (!rotated) {
-      redirect2(res, errorLocation2("provider_error"));
+      redirect3(res, errorLocation3("provider_error"));
       return;
     }
-    const connectionId = randomUUID3();
+    const connectionId = randomUUID4();
     const createdAt = now;
     await deps.store.saveConnection({
       id: connectionId,
@@ -3092,10 +4466,10 @@ async function handleCallback(req, res, deps) {
       createdAt,
       updatedAt: createdAt
     });
-    redirect2(
+    redirect3(
       res,
       `/?${new URLSearchParams({ zoho: "connected", product: product.id }).toString()}`,
-      cookieFor2(rotated, deps, now)
+      cookieFor3(rotated, deps, now)
     );
   } catch (error) {
     const reason = callbackReason(error);
@@ -3104,14 +4478,14 @@ async function handleCallback(req, res, deps) {
     } else {
       loggerOf(deps)(reason);
     }
-    redirect2(res, errorLocation2(reason));
+    redirect3(res, errorLocation3(reason));
   }
 }
 async function handleCatalog(req, res, deps) {
-  const active = await resolveSession2(req, deps, true);
+  const active = await resolveSession3(req, deps, true);
   const connections = active ? await deps.store.listConnections({ sessionId: active.session.id, userId: active.session.userId }) : [];
   const connected = new Map(connections.map((connection) => [connection.product, connection]));
-  sendJson2(
+  sendJson3(
     res,
     200,
     {
@@ -3143,27 +4517,27 @@ async function handleCatalog(req, res, deps) {
 }
 async function handleStatus(req, res, deps, productId) {
   if (!zohoProductById(productId)) {
-    sendJson2(res, 404, publicError("server_error"));
+    sendJson3(res, 404, publicError("server_error"));
     return;
   }
-  const active = await resolveSession2(req, deps, true);
+  const active = await resolveSession3(req, deps, true);
   if (!active) {
-    sendJson2(res, 200, { connected: false, product: productId, identity: IDENTITY });
+    sendJson3(res, 200, { connected: false, product: productId, identity: IDENTITY });
     return;
   }
   const connection = await deps.store.getConnection(ownerOf(active.session, productId));
-  sendJson2(res, 200, statusBody(connection, productId), active.cookie);
+  sendJson3(res, 200, statusBody(connection, productId), active.cookie);
 }
 async function handleLeads(req, res, deps) {
-  const active = await resolveSession2(req, deps, true);
+  const active = await resolveSession3(req, deps, true);
   if (!active) {
-    sendJson2(res, 401, publicError("not_connected"));
+    sendJson3(res, 401, publicError("not_connected"));
     return;
   }
   const owner = ownerOf(active.session, CRM_PRODUCT);
   let connection = await deps.store.getConnection(owner);
   if (!connection) {
-    sendJson2(res, 401, publicError("not_connected"), active.cookie);
+    sendJson3(res, 401, publicError("not_connected"), active.cookie);
     return;
   }
   try {
@@ -3171,7 +4545,7 @@ async function handleLeads(req, res, deps) {
     let accessToken = readSecret(connection, deps, "access");
     if (!accessToken) {
       await deps.store.deleteConnection(owner);
-      sendJson2(res, 401, publicError("reconnect_required"), active.cookie);
+      sendJson3(res, 401, publicError("reconnect_required"), active.cookie);
       return;
     }
     try {
@@ -3179,7 +4553,7 @@ async function handleLeads(req, res, deps) {
         { apiOrigin: connection.apiOrigin, accessToken },
         fetchOf(deps)
       );
-      sendJson2(
+      sendJson3(
         res,
         200,
         { leads, apiDomain: connection.apiOrigin },
@@ -3193,14 +4567,14 @@ async function handleLeads(req, res, deps) {
       accessToken = readSecret(connection, deps, "access");
       if (!accessToken) {
         await deps.store.deleteConnection(owner);
-        sendJson2(res, 401, publicError("reconnect_required"), active.cookie);
+        sendJson3(res, 401, publicError("reconnect_required"), active.cookie);
         return;
       }
       const leads = await fetchLeads(
         { apiOrigin: connection.apiOrigin, accessToken },
         fetchOf(deps)
       );
-      sendJson2(
+      sendJson3(
         res,
         200,
         { leads, apiDomain: connection.apiOrigin },
@@ -3216,32 +4590,32 @@ async function handleLeads(req, res, deps) {
       if (mapped.code === "reconnect_required") {
         await deps.store.deleteConnection(owner);
       }
-      sendJson2(res, mapped.status, publicError(mapped.code), active.cookie);
+      sendJson3(res, mapped.status, publicError(mapped.code), active.cookie);
       return;
     }
     loggerOf(deps)("provider_error");
-    sendJson2(res, 502, publicError("provider_error"), active.cookie);
+    sendJson3(res, 502, publicError("provider_error"), active.cookie);
   }
 }
 async function handlePreview(req, res, deps, productId) {
   const product = zohoProductById(productId);
   if (!product || product.availability !== "available") {
-    sendJson2(res, 404, publicError("server_error"));
+    sendJson3(res, 404, publicError("server_error"));
     return;
   }
-  const active = await resolveSession2(req, deps, true);
+  const active = await resolveSession3(req, deps, true);
   if (!active) {
-    sendJson2(res, 401, publicError("not_connected"));
+    sendJson3(res, 401, publicError("not_connected"));
     return;
   }
-  if (limited2(req, deps, "preview", 60, 6e4)) {
-    sendJson2(res, 429, publicError("rate_limited"), active.cookie);
+  if (limited3(req, deps, "preview", 60, 6e4)) {
+    sendJson3(res, 429, publicError("rate_limited"), active.cookie);
     return;
   }
   const owner = ownerOf(active.session, product.id);
   let connection = await deps.store.getConnection(owner);
   if (!connection) {
-    sendJson2(res, 401, publicError("not_connected"), active.cookie);
+    sendJson3(res, 401, publicError("not_connected"), active.cookie);
     return;
   }
   try {
@@ -3249,10 +4623,10 @@ async function handlePreview(req, res, deps, productId) {
     const accessToken = readSecret(connection, deps, "access");
     if (!accessToken) {
       await deps.store.deleteConnection(owner);
-      sendJson2(res, 401, publicError("reconnect_required"), active.cookie);
+      sendJson3(res, 401, publicError("reconnect_required"), active.cookie);
       return;
     }
-    let preview2 = await previewProduct(
+    let preview3 = await previewProduct(
       product.id,
       {
         apiOrigin: connection.apiOrigin,
@@ -3261,11 +4635,11 @@ async function handlePreview(req, res, deps, productId) {
       },
       fetchOf(deps)
     );
-    if (needsSingleOrganization(product.id, connection.organizationId, preview2.organizations)) {
-      const only = preview2.organizations[0];
+    if (needsSingleOrganization(product.id, connection.organizationId, preview3.organizations)) {
+      const only = preview3.organizations[0];
       if (only && await deps.store.setOrganization(owner, only.id)) {
         connection = { ...connection, organizationId: only.id };
-        preview2 = await previewProduct(
+        preview3 = await previewProduct(
           product.id,
           {
             apiOrigin: connection.apiOrigin,
@@ -3276,16 +4650,16 @@ async function handlePreview(req, res, deps, productId) {
         );
       }
     }
-    sendJson2(
+    sendJson3(
       res,
       200,
       {
         product: product.id,
         apiDomain: connection.apiOrigin,
         organizationId: connection.organizationId,
-        needsOrganization: organizationProducts(product.id) && !connection.organizationId && preview2.organizations.length > 1,
-        organizations: preview2.organizations,
-        sections: preview2.sections
+        needsOrganization: organizationProducts(product.id) && !connection.organizationId && preview3.organizations.length > 1,
+        organizations: preview3.organizations,
+        sections: preview3.sections
       },
       active.cookie
     );
@@ -3295,17 +4669,17 @@ async function handlePreview(req, res, deps, productId) {
 }
 async function handleOrganization(req, res, deps, productId, body) {
   if (!hasCsrfHeader(req)) {
-    sendJson2(res, 403, publicError("server_error"));
+    sendJson3(res, 403, publicError("server_error"));
     return;
   }
   const product = zohoProductById(productId);
   if (!product || !organizationProducts(product.id)) {
-    sendJson2(res, 404, publicError("server_error"));
+    sendJson3(res, 404, publicError("server_error"));
     return;
   }
-  const active = await resolveSession2(req, deps, true);
+  const active = await resolveSession3(req, deps, true);
   if (!active) {
-    sendJson2(res, 401, publicError("not_connected"));
+    sendJson3(res, 401, publicError("not_connected"));
     return;
   }
   let requested = null;
@@ -3317,18 +4691,18 @@ async function handleOrganization(req, res, deps, productId, body) {
     requested = null;
   }
   if (!requested || !ORG_ID_PATTERN.test(requested)) {
-    sendJson2(res, 400, publicError("server_error"), active.cookie);
+    sendJson3(res, 400, publicError("server_error"), active.cookie);
     return;
   }
   const owner = ownerOf(active.session, product.id);
   const connection = await deps.store.getConnection(owner);
   if (!connection) {
-    sendJson2(res, 401, publicError("not_connected"), active.cookie);
+    sendJson3(res, 401, publicError("not_connected"), active.cookie);
     return;
   }
   const accessToken = readSecret(connection, deps, "access");
   if (!accessToken) {
-    sendJson2(res, 401, publicError("reconnect_required"), active.cookie);
+    sendJson3(res, 401, publicError("reconnect_required"), active.cookie);
     return;
   }
   try {
@@ -3338,33 +4712,33 @@ async function handleOrganization(req, res, deps, productId, body) {
       fetchOf(deps)
     );
     if (!organizations.some((organization) => organization.id === requested)) {
-      sendJson2(res, 400, publicError("server_error"), active.cookie);
+      sendJson3(res, 400, publicError("server_error"), active.cookie);
       return;
     }
     await deps.store.setOrganization(owner, requested);
-    sendJson2(res, 200, { organizationId: requested }, active.cookie);
+    sendJson3(res, 200, { organizationId: requested }, active.cookie);
   } catch (error) {
     await sendZohoError(res, deps, owner, error, active.cookie);
   }
 }
 async function handleDisconnect(req, res, deps, productId) {
   if (!hasCsrfHeader(req)) {
-    sendJson2(res, 403, publicError("server_error"));
+    sendJson3(res, 403, publicError("server_error"));
     return;
   }
   if (!zohoProductById(productId)) {
-    sendJson2(res, 404, publicError("server_error"));
+    sendJson3(res, 404, publicError("server_error"));
     return;
   }
-  const active = await resolveSession2(req, deps, true);
+  const active = await resolveSession3(req, deps, true);
   if (!active) {
-    sendJson2(res, 200, { disconnected: true, revoked: false });
+    sendJson3(res, 200, { disconnected: true, revoked: false });
     return;
   }
   const owner = ownerOf(active.session, productId);
   const connection = await deps.store.getConnection(owner);
   if (!connection) {
-    sendJson2(res, 200, { disconnected: true, revoked: false }, active.cookie);
+    sendJson3(res, 200, { disconnected: true, revoked: false }, active.cookie);
     return;
   }
   let revoked = false;
@@ -3376,11 +4750,11 @@ async function handleDisconnect(req, res, deps, productId) {
     );
   }
   await deps.store.deleteConnection(owner);
-  sendJson2(res, 200, { disconnected: true, revoked }, active.cookie);
+  sendJson3(res, 200, { disconnected: true, revoked }, active.cookie);
 }
 async function refreshIfDue(connection, deps, force) {
-  const now = clock2(deps);
-  const due = connection.accessTokenExpiresAt - ACCESS_REFRESH_SKEW_MS2 <= now;
+  const now = clock3(deps);
+  const due = connection.accessTokenExpiresAt - ACCESS_REFRESH_SKEW_MS3 <= now;
   if (!force && !due) return connection;
   const refreshToken = readSecret(connection, deps, "refresh");
   if (!refreshToken) {
@@ -3406,8 +4780,8 @@ async function refreshIfDue(connection, deps, force) {
   await deps.store.updateConnectionSecrets(updated);
   return updated;
 }
-async function resolveSession2(req, deps, rotate) {
-  const now = clock2(deps);
+async function resolveSession3(req, deps, rotate) {
+  const now = clock3(deps);
   const token = readCookie(req.headers.cookie, SESSION_COOKIE);
   if (!token) return null;
   const payload = verifySessionToken(token, deps.config.sessionSecret, now);
@@ -3415,14 +4789,14 @@ async function resolveSession2(req, deps, rotate) {
   const session = await deps.store.getSession(payload.sid);
   if (!session || session.expiresAt <= now || session.id !== payload.sid) return null;
   if (rotate && now - session.createdAt >= SESSION_ROTATE_AFTER_MS) {
-    const next = newSession2(now, session.userId);
+    const next = newSession3(now, session.userId);
     const rotated = await deps.store.rotateSession(session.id, now, next);
     if (!rotated) return null;
-    return { session: rotated, cookie: cookieFor2(rotated, deps, now) };
+    return { session: rotated, cookie: cookieFor3(rotated, deps, now) };
   }
   return { session, cookie: null };
 }
-function newSession2(now, userId) {
+function newSession3(now, userId) {
   return {
     id: createSessionId(),
     createdAt: now,
@@ -3430,7 +4804,7 @@ function newSession2(now, userId) {
     userId
   };
 }
-function cookieFor2(session, deps, now) {
+function cookieFor3(session, deps, now) {
   const token = signSession(
     { sid: session.id, iat: session.createdAt, exp: session.expiresAt },
     deps.config.sessionSecret
@@ -3471,30 +4845,38 @@ function organizationProducts(product) {
 function needsSingleOrganization(product, organizationId, organizations) {
   return organizationProducts(product) && !organizationId && organizations.length === 1;
 }
-function persistenceReady2(deps) {
+function persistenceReady3(deps) {
   if (process.env.VERCEL === "1" && !deps.config.databaseUrl) return false;
   return true;
 }
 function persistenceName(deps) {
   if (deps.config.databaseUrl) return "postgres";
-  if (!persistenceReady2(deps)) return "unavailable";
+  if (!persistenceReady3(deps)) return "unavailable";
   return "sqlite";
 }
-var REQUIRED_TABLES = ["oauth_states", "sessions", "zoho_connections", "google_grants", "google_connections"];
+var REQUIRED_TABLES = [
+  "oauth_states",
+  "sessions",
+  "zoho_connections",
+  "google_grants",
+  "google_connections",
+  "microsoft_grants",
+  "microsoft_connections"
+];
 async function handleHealth(res, deps) {
   const persistence = persistenceName(deps);
-  if (!persistenceReady2(deps)) {
-    sendJson2(res, 503, { ok: false, persistence, identity: IDENTITY, tables: [] });
+  if (!persistenceReady3(deps)) {
+    sendJson3(res, 503, { ok: false, persistence, identity: IDENTITY, tables: [] });
     return;
   }
   try {
     const ping = await deps.store.ping();
     const tables = ping.tables.filter((name) => REQUIRED_TABLES.includes(name)).sort();
     const ok = REQUIRED_TABLES.every((name) => tables.includes(name));
-    sendJson2(res, ok ? 200 : 503, { ok, persistence, identity: IDENTITY, tables });
+    sendJson3(res, ok ? 200 : 503, { ok, persistence, identity: IDENTITY, tables });
   } catch (error) {
     loggerOf(deps)("database_check_failed");
-    sendJson2(res, 503, {
+    sendJson3(res, 503, {
       ok: false,
       persistence,
       identity: IDENTITY,
@@ -3510,9 +4892,9 @@ function safeDbMessage(error) {
 function hasCsrfHeader(req) {
   return req.headers["x-em-request"] === "1";
 }
-function limited2(req, deps, action, limit, windowMs) {
+function limited3(req, deps, action, limit, windowMs) {
   if (!deps.config.production || deps.now) return false;
-  const now = clock2(deps);
+  const now = clock3(deps);
   const session = readCookie(req.headers.cookie, SESSION_COOKIE) ?? "anonymous";
   const key = `${action}:${session.slice(0, 32)}`;
   const recent = (rateBuckets.get(key) ?? []).filter((stamp) => now - stamp < windowMs);
@@ -3525,15 +4907,15 @@ async function sendZohoError(res, deps, owner, error, cookie) {
     if (error.providerCode) loggerOf(deps)(error.kind, { providerCode: error.providerCode });
     const mapped = zohoHttpError(error);
     if (mapped.code === "reconnect_required") await deps.store.deleteConnection(owner);
-    sendJson2(res, mapped.status, publicError(mapped.code), cookie);
+    sendJson3(res, mapped.status, publicError(mapped.code), cookie);
     return;
   }
   loggerOf(deps)("provider_error");
-  sendJson2(res, 502, publicError("provider_error"), cookie);
+  sendJson3(res, 502, publicError("provider_error"), cookie);
 }
-async function consumeIfValid2(deps, state, sessionId) {
-  if (!state || !sessionId || !STATE_PATTERN2.test(state)) return;
-  await deps.store.consumeOauthState(state, sessionId, clock2(deps));
+async function consumeIfValid3(deps, state, sessionId) {
+  if (!state || !sessionId || !STATE_PATTERN3.test(state)) return;
+  await deps.store.consumeOauthState(state, sessionId, clock3(deps));
 }
 function callbackReason(error) {
   if (error instanceof DomainError) {
@@ -3590,10 +4972,10 @@ function isDeadGrant(error) {
 function publicError(code) {
   return { error: code, message: PUBLIC_MESSAGES[code] };
 }
-function errorLocation2(reason) {
+function errorLocation3(reason) {
   return `/?${new URLSearchParams({ zoho: "error", reason }).toString()}`;
 }
-function redirect2(res, location, cookie) {
+function redirect3(res, location, cookie) {
   const headers = {
     Location: location,
     "Cache-Control": "no-store",
@@ -3604,7 +4986,7 @@ function redirect2(res, location, cookie) {
   res.writeHead(302, headers);
   res.end();
 }
-function sendJson2(res, status, body, cookie) {
+function sendJson3(res, status, body, cookie) {
   const payload = JSON.stringify(body);
   const headers = {
     "Content-Type": "application/json; charset=utf-8",
@@ -3632,7 +5014,7 @@ function requestParams(rawUrl) {
     return new URLSearchParams();
   }
 }
-function bounded2(value, max) {
+function bounded3(value, max) {
   if (value === null || value.length === 0 || value.length > max) return null;
   return value;
 }
@@ -3650,7 +5032,7 @@ async function readBody(req) {
   }
   return Buffer.concat(chunks).toString("utf8");
 }
-function clock2(deps) {
+function clock3(deps) {
   return deps.now ? deps.now() : Date.now();
 }
 function fetchOf(deps) {
@@ -3695,6 +5077,13 @@ function unavailableStore() {
     upsertGoogleConnection: refused,
     deleteGoogleConnection: () => Promise.resolve(false),
     deleteGoogleGrant: refused,
+    getMicrosoftGrant: () => Promise.resolve(null),
+    insertMicrosoftGrant: refused,
+    updateMicrosoftGrant: refused,
+    listMicrosoftConnections: () => Promise.resolve([]),
+    upsertMicrosoftConnection: refused,
+    deleteMicrosoftConnection: () => Promise.resolve(false),
+    deleteMicrosoftGrant: refused,
     ping: () => Promise.resolve({ tables: [] }),
     close: () => Promise.resolve()
   };
@@ -3703,11 +5092,19 @@ function unavailableStore() {
 // server/vercel-handler.ts
 init_postgres_store();
 var ready = null;
-var REQUIRED_TABLES3 = ["oauth_states", "sessions", "zoho_connections", "google_grants", "google_connections"];
+var REQUIRED_TABLES3 = [
+  "oauth_states",
+  "sessions",
+  "zoho_connections",
+  "google_grants",
+  "google_connections",
+  "microsoft_grants",
+  "microsoft_connections"
+];
 async function reportDatabaseHealth(res) {
   const databaseUrl = process.env.DATABASE_URL?.trim() || "";
   if (!databaseUrl) {
-    sendJson3(res, 503, { ok: false, persistence: "unavailable", identity: IDENTITY, tables: [] });
+    sendJson4(res, 503, { ok: false, persistence: "unavailable", identity: IDENTITY, tables: [] });
     return;
   }
   try {
@@ -3716,9 +5113,9 @@ async function reportDatabaseHealth(res) {
     await store.close();
     const tables = ping.tables.filter((name) => REQUIRED_TABLES3.includes(name)).sort();
     const ok = REQUIRED_TABLES3.every((name) => tables.includes(name));
-    sendJson3(res, ok ? 200 : 503, { ok, persistence: "postgres", identity: IDENTITY, tables });
+    sendJson4(res, ok ? 200 : 503, { ok, persistence: "postgres", identity: IDENTITY, tables });
   } catch (error) {
-    sendJson3(res, 503, {
+    sendJson4(res, 503, {
       ok: false,
       persistence: "postgres",
       identity: IDENTITY,
@@ -3727,7 +5124,7 @@ async function reportDatabaseHealth(res) {
     });
   }
 }
-function sendJson3(res, status, body) {
+function sendJson4(res, status, body) {
   res.statusCode = status;
   res.setHeader("Content-Type", "application/json; charset=utf-8");
   res.setHeader("Cache-Control", "no-store");
@@ -3752,7 +5149,12 @@ function context() {
     ready = (async () => {
       const config = loadConfig(process.env);
       const store = await openConfiguredStore(config);
-      return { config, store, googleConfig: loadGoogleConfig(process.env, config.production) };
+      return {
+        config,
+        store,
+        googleConfig: loadGoogleConfig(process.env, config.production),
+        microsoftConfig: loadMicrosoftConfig(process.env, config.production)
+      };
     })();
   }
   return ready;

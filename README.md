@@ -1,5 +1,7 @@
 # Integrations
 
+Microsoft products stay hidden until `MICROSOFT_CLIENT_ID`, `MICROSOFT_CLIENT_SECRET`, `MICROSOFT_REDIRECT_URI`, `MICROSOFT_TENANT`, and `MICROSOFT_CONFIRMED_PRODUCTS` are set. The production callback is exactly `https://em.multiplierclub.in/api/integrations/microsoft/callback`. Confirmable Graph products are `outlook-mail,outlook-calendar,contacts,teams,onedrive,sharepoint,word,excel,powerpoint,onenote,todo,planner`. Teams (`Team.ReadBasic.All`) and SharePoint (`Sites.Read.All`) need admin consent. Teams meetings, Bookings, Forms, Power BI, Dynamics 365, Azure Resource Manager, Azure DevOps, and Power Platform stay hidden. Disconnecting one Microsoft product removes only that product. The stored grant is deleted only when no other product still uses it. Microsoft does not provide a simple refresh-token revoke for this flow, so the Entra permission remains in the Microsoft account.
+
 Google products stay hidden until `GOOGLE_CONFIRMED_PRODUCTS` lists ids whose Cloud APIs an administrator has enabled. The confirmed ids are `gmail,calendar,drive,docs,sheets,slides,forms,tasks,people,meet,analytics,search-console,apps-script`. The OAuth client variables alone do not make a product visible. Chat, Admin SDK, and Workspace Events stay hidden because their prerequisites are not configured. Disconnecting one Google product removes it locally. The Google refresh token is revoked only when no other product still uses that grant.
 
 # Zoho integrations
